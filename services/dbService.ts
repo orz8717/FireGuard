@@ -1157,9 +1157,12 @@ class DBService {
             // The script will run in the background on Google's servers.
             fetch(GAS_WEB_APP_URL, {
               method: 'POST',
-              mode: 'no-cors',
+              headers: { 'Content-Type': 'text/plain' },
               body: JSON.stringify(payload)
-            }).catch(err => console.error(`[Automation] Fetch error:`, err));
+            }).catch(err => {
+              console.error(`[Automation] Fetch error:`, err);
+              alert('הנתונים נשמרו ב-Supabase אך האוטומציה נכשלה עקב חסימת דפדפן');
+            });
             
             console.log(`[Automation] Bot ${bot.name} task dispatched.`);
           }

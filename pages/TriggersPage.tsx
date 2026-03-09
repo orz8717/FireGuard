@@ -129,7 +129,7 @@ const TriggersPage: React.FC<TriggersPageProps> = ({ user }) => {
 
       await fetch(GAS_WEB_APP_URL, {
         method: 'POST',
-        mode: 'no-cors',
+        headers: { 'Content-Type': 'text/plain' },
         body: JSON.stringify(payload)
       });
 
@@ -137,7 +137,7 @@ const TriggersPage: React.FC<TriggersPageProps> = ({ user }) => {
       
     } catch (err: any) {
       console.error('Template generation error:', err);
-      alert('שגיאה ביצירת השבלונה');
+      alert('הנתונים נשמרו ב-Supabase אך האוטומציה נכשלה עקב חסימת דפדפן');
     } finally {
       setGeneratingTemplate(false);
     }
@@ -224,6 +224,7 @@ const TriggersPage: React.FC<TriggersPageProps> = ({ user }) => {
               // but the script will still execute.
               const response = await fetch(GAS_WEB_APP_URL, {
                 method: 'POST',
+                headers: { 'Content-Type': 'text/plain' },
                 body: JSON.stringify(payload)
               });
 
@@ -244,7 +245,8 @@ const TriggersPage: React.FC<TriggersPageProps> = ({ user }) => {
               }
             } catch (fetchErr: any) {
               console.error("[Automation Debug] Fetch Error:", fetchErr);
-              setSimulationLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] INFO: Request sent. If you don't see server logs, it's due to browser CORS restrictions, but the script is running.`]);
+              setSimulationLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] ERROR: הנתונים נשמרו ב-Supabase אך האוטומציה נכשלה עקב חסימת דפדפן`]);
+              alert('הנתונים נשמרו ב-Supabase אך האוטומציה נכשלה עקב חסימת דפדפן');
             }
 
             const successMsg = `הסימולציה הסתיימה. בדוק את הלוגים למטה לפרטים נוספים.`;
