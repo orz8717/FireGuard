@@ -1,0 +1,75 @@
+@import "tailwindcss";
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700&display=swap');
+
+@theme {
+  /* הגדרת הצבעים המדויקים שראינו בתמונות שלך */
+  --color-slate-50: #f8fafc;
+  --color-slate-200: #e2e8f0;
+  --color-slate-700: #334155;
+  --color-slate-800: #1e293b;
+  --color-slate-900: #0f172a;
+  
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+@layer base {
+  html {
+    background-color: var(--color-slate-900);
+    color: var(--color-slate-200);
+  }
+
+  body {
+    background-color: var(--color-slate-900);
+    font-family: var(--font-sans);
+    min-height: 100vh;
+    margin: 0;
+  }
+}
+
+/* עיצוב פאנלים בסגנון זכוכית (Glassmorphism) כמו ביומן הפעילות */
+.glass-panel {
+  background-color: rgba(30, 41, 59, 0.5);
+  border: 1px solid rgba(51, 65, 85, 0.5);
+  backdrop-filter: blur(4px);
+  border-radius: 0.75rem;
+}
+
+/* סרגל גלילה מותאם ל-Dark Mode */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--color-slate-900);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-slate-700);
+  border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-slate-800);
+}
+
+@layer base {
+  /* תיקון צבע הטקסט המוקלד בכל השדות */
+  input, select, textarea {
+    @apply text-slate-900;
+    color: #1e293b !important; /* Slate 800 */
+  }
+
+  /* תיקון ספציפי לכיתוב ה-Placeholder (בחר לקוח...) */
+  ::placeholder {
+    color: #475569 !important; /* Slate 600 - כהה וברור */
+    opacity: 1 !important;     /* מבטל שקיפות של דפדפנים */
+  }
+
+  /* עבור דפדפני Safari ו-Chrome ישנים */
+  ::-webkit-input-placeholder {
+    color: #475569 !important;
+    opacity: 1 !important;
+  }
+}
