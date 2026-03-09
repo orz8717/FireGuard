@@ -9,8 +9,8 @@ interface LoginProps {
 }
 
 const Login: React.FC<LoginProps> = ({ onLogin }) => {
-  const [email, setEmail] = React.useState(() => localStorage.getItem('last_login_email') || 'admin@fireguard.co.il');
-  const [password, setPassword] = React.useState('123456');
+  const [email, setEmail] = React.useState(() => localStorage.getItem('last_login_email') || '');
+  const [password, setPassword] = React.useState('');
   const [error, setError] = React.useState('');
   const [loading, setLoading] = React.useState(false);
 
