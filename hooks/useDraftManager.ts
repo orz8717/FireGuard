@@ -29,7 +29,7 @@ export const useDraftManager = (userId: string, tableName: string) => {
           .select('data, last_updated')
           .eq('user_id', userId)
           .eq('table_name', tableName)
-          .single();
+          .maybeSingle();
 
         if (error && error.code !== 'PGRST116') {
           console.error('Error checking draft:', error);
@@ -64,16 +64,21 @@ export const useDraftManager = (userId: string, tableName: string) => {
 
     setIsSaving(true);
     try {
-      const { error } = await supabase
+      const { data: result, error } = await supabase
         .from('inspection_drafts')
         .upsert({
           user_id: userId,
           table_name: tableName,
           data: data,
           last_updated: new Date().toISOString()
-        }, { onConflict: 'user_id, table_name' });
+        }, { onConflict: 'user_id, table_name' })
+        .select();
 
       if (error) throw error;
+      if (!result || result.length === 0) {
+        throw new Error(`Data sync failed for table: inspection_drafts`);
+      }
+
       setHasDraft(true);
       setDraftData(data);
     } catch (err) {

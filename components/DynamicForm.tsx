@@ -1428,14 +1428,17 @@ const DynamicForm: React.FC<DynamicFormProps> = ({
                     editingInspectionId: editingInspectionId
                   };
 
-                  const { error } = await supabase.from('inspection_drafts').upsert({
+                  const { data: result, error } = await supabase.from('inspection_drafts').upsert({
                     user_id: currentUser.id,
                     table_name: template.id,
                     data: draftData,
                     last_updated: new Date().toISOString()
-                  }, { onConflict: 'user_id,table_name' });
+                  }, { onConflict: 'user_id,table_name' }).select();
 
                   if (error) throw error;
+                  if (!result || result.length === 0) {
+                    throw new Error(`Data sync failed for table: inspection_drafts`);
+                  }
                   
                   onCancel();
                 } catch (err) {

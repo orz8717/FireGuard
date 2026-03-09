@@ -150,11 +150,23 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
     // If not found in state, fetch from Supabase directly
     if (!draft) {
       try {
-        const { data } = await supabase
-          .from('inspection_drafts')
-          .select('*')
-          .eq('id', draftId)
-          .single();
+        let query = supabase.from('inspection_drafts').select('*').eq('user_id', user.id);
+        
+        if (draftId.startsWith('insp_')) {
+          // Extract template ID from insp_TEMPLATEID_TIMESTAMP
+          const parts = draftId.split('_');
+          if (parts.length >= 2) {
+            const templateId = parts[1];
+            query = query.eq('table_name', templateId);
+          } else {
+            return; // Invalid ID format
+          }
+        } else {
+          // Assume it's a UUID
+          query = query.eq('id', draftId);
+        }
+
+        const { data } = await query.maybeSingle();
           
         if (data) {
           draft = {
@@ -612,15 +624,24 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
                           .select('data')
                           .eq('user_id', user.id)
                           .eq('table_name', template?.id)
-                          .single();
+                          .maybeSingle();
                           
                         if (!fetchError && draft) {
                           const updatedData = { ...draft.data, editingInspectionId: savedId };
-                          await supabase
+                          const { data: result, error: updateError } = await supabase
                             .from('inspection_drafts')
-                            .update({ data: updatedData, last_updated: new Date().toISOString() })
-                            .eq('user_id', user.id)
-                            .eq('table_name', template?.id);
+                            .upsert({ 
+                              user_id: user.id, 
+                              table_name: template?.id, 
+                              data: updatedData, 
+                              last_updated: new Date().toISOString() 
+                            }, { onConflict: 'user_id, table_name' })
+                            .select();
+                          
+                          if (updateError) throw updateError;
+                          if (!result || result.length === 0) {
+                            throw new Error(`Data sync failed for table: inspection_drafts`);
+                          }
                           console.log(`[Skeleton Save] Updated Supabase draft with editingInspectionId: ${savedId}`);
                         }
                       } catch (e) {

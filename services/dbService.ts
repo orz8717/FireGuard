@@ -172,6 +172,25 @@ class DBService {
     } catch { return false; }
   }
 
+  async saveToTable(tableName: string, payload: any, useAdmin: boolean = false) {
+    const client = useAdmin ? supabaseAdmin : supabase;
+    const { data, error } = await client
+      .from(tableName)
+      .upsert(payload)
+      .select();
+
+    if (error) {
+      console.error(`Error saving to ${tableName}:`, error.message);
+      throw error;
+    }
+
+    if (!data || data.length === 0) {
+      throw new Error(`Data sync failed for table: ${tableName}`);
+    }
+
+    return data[0];
+  }
+
   async deleteRecord(tableName: string, id: string | number) {
     const { error } = await supabaseAdmin.from(tableName).delete().eq('id', id);
     if (error) throw error;
@@ -198,8 +217,10 @@ class DBService {
       delete payload.isActive;
     }
     delete payload.password; // Ensure password is not sent to public.users
-    const { error } = await supabase.from('users').update({ ...payload, updated_at: new Date().toISOString() }).eq('id', id);
-    if (error) {
+    
+    try {
+      return await this.saveToTable('users', { ...payload, id, updated_at: new Date().toISOString() });
+    } catch (error: any) {
       if (error.code === '42501') {
         window.location.href = '/';
       }
@@ -310,7 +331,6 @@ class DBService {
   }
 
   async savePermissions(userId: string, permissions: Partial<Permission>[]) {
-    await supabase.from('permissions').delete().eq('user_id', userId);
     const payload = permissions.map(p => ({
       user_id: userId,
       screen_key: p.screenKey,
@@ -323,7 +343,10 @@ class DBService {
       can_generate_certificates: p.canGenerateCertificates,
       can_import_excel: p.canImportExcel
     }));
-    await supabase.from('permissions').insert(payload);
+    const { data, error } = await supabase.from('permissions').upsert(payload, { onConflict: 'user_id, screen_key' }).select();
+    if (error) throw error;
+    if (!data || data.length === 0) throw new Error('Data sync failed for table: permissions');
+    return data;
   }
 
   async getCustomers(): Promise<Customer[]> {
@@ -359,9 +382,7 @@ class DBService {
       notes: JSON.stringify(notesObj)
     };
     if (payload.id === "" || payload.id === undefined) delete payload.id;
-    const { data, error } = await supabase.from('customers').insert([payload]).select().single();
-    if (error) throw error;
-    return data;
+    return await this.saveToTable('customers', payload);
   }
 
   async updateCustomer(id: string, customer: Partial<Customer>) {
@@ -370,6 +391,7 @@ class DBService {
     let nNotes: any = {}; try { nNotes = JSON.parse(customer.notes || '{}'); } catch {}
     nNotes['ROW ID'] = eNotes['ROW ID'] || await this.generateRowId();
     const payload = {
+      id,
       customer_number: customer.customerNumber,
       name: customer.name,
       address: customer.address,
@@ -380,7 +402,7 @@ class DBService {
       notes: JSON.stringify(nNotes),
       updated_at: new Date().toISOString()
     };
-    await supabase.from('customers').update(payload).eq('id', id);
+    return await this.saveToTable('customers', payload);
   }
 
   async addCustomersBatch(customers: Partial<Customer>[]) {
@@ -398,7 +420,10 @@ class DBService {
         notes: JSON.stringify(nObj)
       };
     }));
-    await supabase.from('customers').insert(processed);
+    const { data, error } = await supabase.from('customers').upsert(processed).select();
+    if (error) throw error;
+    if (!data || data.length === 0) throw new Error('Data sync failed for table: customers');
+    return data;
   }
 
   async getInspections(): Promise<Inspection[]> {
@@ -447,14 +472,7 @@ class DBService {
       }
 
       console.log(`[DB] Final Payload for custom table '${tableName}':`, payload);
-      const { data, error } = await supabaseAdmin.from(tableName).insert([payload]).select();
-      if (error) {
-        console.error(`[DB] Error inserting into ${tableName}:`, error);
-        throw error;
-      }
-      console.log('Database Confirmation:', data);
-      console.log(`[DB] Successfully inserted into ${tableName}`);
-      return data?.[0] || data;
+      return await this.saveToTable(tableName, payload, true);
     }
 
     const payload: any = {
@@ -477,14 +495,7 @@ class DBService {
     if (payload.id === "" || payload.id === undefined) delete payload.id;
 
     console.log(`[DB] Final Payload for default table 'inspections':`, payload);
-    const { data, error } = await supabaseAdmin.from(tableName).insert([payload]).select();
-    if (error) {
-      console.error(`[DB] Error inserting into ${tableName}:`, error);
-      throw error;
-    }
-    console.log('Database Confirmation:', data);
-    console.log(`[DB] Successfully inserted into ${tableName}`);
-    return data?.[0] || data;
+    return await this.saveToTable(tableName, payload, true);
   }
 
   async updateInspection(id: string, inspection: Partial<Inspection>, tableName: string = 'inspections') {
@@ -494,7 +505,7 @@ class DBService {
       const columnNames = columns.map(c => c.column_name);
       
       const rawData = { ...inspection.data };
-      const payload: any = {};
+      const payload: any = { id };
       
       if (columnNames.length > 0) {
         Object.keys(rawData).forEach(key => {
@@ -512,17 +523,10 @@ class DBService {
       }
 
       console.log(`[DB] Final Payload for custom table '${tableName}':`, payload);
-      const { data, error } = await supabaseAdmin.from(tableName).update(payload).eq('id', id).select();
-      if (error) {
-        console.error(`[DB] Error updating ${tableName}:`, error);
-        throw error;
-      }
-      console.log('Database Confirmation:', data);
-      console.log(`[DB] Successfully updated ${tableName}`);
-      return data?.[0] || data;
+      return await this.saveToTable(tableName, payload, true);
     }
 
-    const payload: any = {};
+    const payload: any = { id };
     if (inspection.customerId !== undefined) payload.customer_id = inspection.customerId === "" ? null : inspection.customerId;
     if (inspection.technicianId !== undefined) payload.technician_id = inspection.technicianId === "" ? null : inspection.technicianId;
     if (inspection.inspectionDate !== undefined) payload.inspection_date = inspection.inspectionDate;
@@ -535,14 +539,7 @@ class DBService {
     }
 
     console.log(`[DB] Final Payload for default table 'inspections':`, payload);
-    const { data, error } = await supabaseAdmin.from(tableName).update(payload).eq('id', id).select();
-    if (error) {
-      console.error(`[DB] Error updating ${tableName}:`, error);
-      throw error;
-    }
-    console.log('Database Confirmation:', data);
-    console.log(`[DB] Successfully updated ${tableName}`);
-    return data?.[0] || data;
+    return await this.saveToTable(tableName, payload, true);
   }
 
   async deleteInspection(id: string) {
@@ -615,11 +612,7 @@ class DBService {
 
       // Use supabaseAdmin to bypass RLS session issues in iframe, 
       // since we've already verified the user's role manually above.
-      const { data, error } = await supabaseAdmin.from('automation_bots').upsert(payload).select().single();
-      if (error) {
-        throw error;
-      }
-      return data;
+      return await this.saveToTable('automation_bots', payload, true);
     } catch (error: any) {
       if (error?.code === '42501') {
         console.log("Auth ID:", authId, "Table ID:", tableId, "Role:", role);
@@ -629,8 +622,7 @@ class DBService {
   }
 
   async updateBotStatus(id: string, isActive: boolean) {
-    const { error } = await supabaseAdmin.from('automation_bots').update({ is_active: isActive }).eq('id', id);
-    if (error) throw error;
+    return await this.saveToTable('automation_bots', { id, is_active: isActive }, true);
   }
 
   async deleteBot(id: string) {
@@ -760,15 +752,14 @@ class DBService {
   }
 
   async updateFormTemplate(id: string, updates: Partial<FormTemplate>) {
-    const payload: any = {};
+    const payload: any = { id };
     if (updates.name !== undefined) payload.name = updates.name;
     if (updates.description !== undefined) payload.description = updates.description;
     if (updates.isActive !== undefined) payload.is_active = updates.isActive;
     if (updates.tableName !== undefined) payload.table_name = updates.tableName;
     if (updates.navigation_config !== undefined) payload.navigation_config = updates.navigation_config;
 
-    const { error } = await supabase.from('form_templates').update(payload).eq('id', id);
-    if (error) throw error;
+    return await this.saveToTable('form_templates', payload);
   }
 
   async saveFormFields(templateId: string, fields: FormField[], deletedIds: string[]) {
@@ -802,7 +793,11 @@ class DBService {
           isHidden: !!f.isHidden
         }
       }));
-      if (upsertPayload.length > 0) await supabase.from('form_fields').upsert(upsertPayload);
+      if (upsertPayload.length > 0) {
+        const { data, error } = await supabase.from('form_fields').upsert(upsertPayload).select();
+        if (error) throw error;
+        if (!data || data.length === 0) throw new Error('Data sync failed for table: form_fields');
+      }
     } catch (err) { throw err; }
   }
 

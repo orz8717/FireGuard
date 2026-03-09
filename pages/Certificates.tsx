@@ -11,8 +11,6 @@ interface CertificatesProps {
 }
 
 const Certificates: React.FC<CertificatesProps> = ({ user }) => {
-  const GLOBAL_DRAFTS_KEY = `inspection_drafts`;
-  
   const [loading, setLoading] = React.useState(true);
   const [inspections, setInspections] = React.useState<Inspection[]>([]);
   const [customers, setCustomers] = React.useState<Customer[]>([]);
@@ -80,23 +78,15 @@ const Certificates: React.FC<CertificatesProps> = ({ user }) => {
         }));
       }
 
-      const saved = localStorage.getItem(GLOBAL_DRAFTS_KEY);
-      const localDrafts = saved ? JSON.parse(saved) : [];
-      
-      const allDrafts = [...supabaseDrafts, ...localDrafts]
+      // Only use Supabase drafts to prevent duplicates
+      const allDrafts = supabaseDrafts
         .filter((d: any) => d.templateName?.startsWith('אישור'))
         .sort((a: any, b: any) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
         
       setDrafts(allDrafts);
     } catch (err) {
       console.error('Error loading drafts:', err);
-      const saved = localStorage.getItem(GLOBAL_DRAFTS_KEY);
-      if (!saved) {
-        setDrafts([]);
-        return;
-      }
-      const allDrafts = JSON.parse(saved);
-      setDrafts(allDrafts.filter((d: any) => d.templateName?.startsWith('אישור')).sort((a: any, b: any) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()));
+      setDrafts([]);
     }
   };
 
@@ -132,23 +122,26 @@ const Certificates: React.FC<CertificatesProps> = ({ user }) => {
   const handleContinueDraft = async (draftId: string) => {
     let draft: any = null;
     
-    const saved = localStorage.getItem(GLOBAL_DRAFTS_KEY);
-    if (saved) {
-      const allDrafts = JSON.parse(saved);
-      draft = allDrafts.find((d: any) => d.id === draftId);
-    }
-    
-    if (!draft) {
-      draft = drafts.find(d => d.id === draftId);
-    }
+    // Check Supabase drafts in state
+    draft = drafts.find(d => d.id === draftId);
     
     if (!draft) {
       try {
-        const { data } = await supabase
-          .from('inspection_drafts')
-          .select('*')
-          .eq('id', draftId)
-          .single();
+        let query = supabase.from('inspection_drafts').select('*').eq('user_id', user.id);
+        
+        if (draftId.startsWith('insp_')) {
+          const parts = draftId.split('_');
+          if (parts.length >= 2) {
+            const templateId = parts[1];
+            query = query.eq('table_name', templateId);
+          } else {
+            return;
+          }
+        } else {
+          query = query.eq('id', draftId);
+        }
+
+        const { data } = await query.maybeSingle();
           
         if (data) {
           draft = {
@@ -421,13 +414,6 @@ const Certificates: React.FC<CertificatesProps> = ({ user }) => {
                            await supabase.from('inspection_drafts').delete().eq('id', draft.id);
                            loadDrafts();
                          } catch (e) { console.error('Error deleting draft', e); }
-                       } else {
-                         const s = localStorage.getItem(GLOBAL_DRAFTS_KEY); 
-                         if(s) { 
-                           const f = JSON.parse(s).filter((d:any)=>d.id!==draft.id); 
-                           localStorage.setItem(GLOBAL_DRAFTS_KEY, JSON.stringify(f)); 
-                           loadDrafts(); 
-                         } 
                        }
                      }} className="text-slate-300 hover:text-red-600 transition-all"><Trash2 size={18} /></button>
                    </div>
