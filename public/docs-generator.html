@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <title>FireGuard Israel - Technical Documentation Generator</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.28/jspdf.plugin.autotable.min.js"></script>
+    <style>
+        body { font-family: system-ui, -apple-system, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; background: #f8fafc; color: #1e293b; }
+        .card { background: white; padding: 2rem; rounded: 1.5rem; shadow: 0 10px 25px rgba(0,0,0,0.05); text-align: center; max-width: 500px; border-radius: 24px; border: 1px solid #e2e8f0; }
+        h1 { font-weight: 900; margin-bottom: 1rem; color: #2563eb; }
+        p { margin-bottom: 2rem; line-height: 1.6; font-weight: 500; }
+        button { background: #2563eb; color: white; border: none; padding: 1rem 2rem; border-radius: 12px; font-weight: 800; cursor: pointer; transition: all 0.2s; }
+        button:hover { background: #1d4ed8; transform: scale(1.05); }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>Technical Documentation</h1>
+        <p>לחץ על הכפתור למטה כדי להפיק ולהוריד את המדריך הטכני המלא של המערכת (PDF).</p>
+        <button id="generate">הורד מדריך טכני (PDF)</button>
+    </div>
+
+    <script>
+        document.getElementById('generate').addEventListener('click', () => {
+            const { jsPDF } = window.jspdf;
+            const doc = new jsPDF();
+            
+            // Title
+            doc.setFontSize(22);
+            doc.text("FireGuard Israel: Technical Documentation", 20, 20);
+            
+            doc.setFontSize(12);
+            doc.text("Generated on: " + new Date().toLocaleString(), 20, 30);
+            
+            // Section 1
+            doc.setFontSize(16);
+            doc.setTextColor(37, 99, 235);
+            doc.text("1. System Architecture: 'Single-Trip' Atomic Saving", 20, 45);
+            doc.setTextColor(0, 0, 0);
+            doc.setFontSize(11);
+            const archText = [
+                "The application implements a 'Single-Trip' Atomic Saving strategy to ensure data integrity.",
+                "Instead of multiple API calls, the frontend bundles all Parent, Child, and Grandchild records",
+                "into a single JSONB column named 'temp_child_data'.",
+                "",
+                "A PostgreSQL trigger (atomic_nested_insert_trigger) intercepts the save operation,",
+                "parses the JSON hierarchy, and distributes records into their respective tables",
+                "within a single database transaction. This eliminates orphaned records caused by network failures."
+            ];
+            doc.text(archText, 20, 55);
+
+            // Section 2
+            doc.setFontSize(16);
+            doc.setTextColor(37, 99, 235);
+            doc.text("2. Data Hierarchy", 20, 100);
+            doc.setTextColor(0, 0, 0);
+            doc.setFontSize(11);
+            doc.autoTable({
+                startY: 105,
+                head: [['Parent Table', 'Child Table', 'Relationship Type']],
+                body: [
+                    ['inspections', 'extinguishers', 'Parent -> Child'],
+                    ['חצי_שנתי', 'כיבויים_חצי_שנתי', 'Parent -> Child'],
+                    ['ביקורת_שנתית', 'כיבויים_שנתי', 'Parent -> Child'],
+                    ['כיבויים_שנתי', 'כיבויים_שנתי_2', 'Child -> Grandchild']
+                ],
+                margin: { left: 20 }
+            });
+
+            // Section 3
+            doc.setFontSize(16);
+            doc.setTextColor(37, 99, 235);
+            doc.text("3. Database Schema", 20, 150);
+            doc.setTextColor(0, 0, 0);
+            doc.setFontSize(11);
+            doc.text([
+                "- Primary Key: 'id' (UUID) - Automatically generated using gen_random_uuid().",
+                "- Foreign Key: 'parent_id' (UUID) - References the 'id' of the immediate parent table.",
+                "- Linking Column: 'temp_child_data' (JSONB) - Used as the transport vehicle for atomic saves.",
+                "- Metadata: 'ROWID' (Text) - Used for frontend state management and initial linking."
+            ], 20, 160);
+
+            // Section 4
+            doc.setFontSize(16);
+            doc.setTextColor(37, 99, 235);
+            doc.text("4. Frontend Logic", 20, 190);
+            doc.setTextColor(0, 0, 0);
+            doc.setFontSize(11);
+            doc.text([
+                "The 'nestChildRecords' function recursively builds the data tree before submission.",
+                "It matches child records to their parents using the 'ROWID' property.",
+                "Temporary IDs (temp_...) are used to maintain relationships in the local state",
+                "until the database assigns permanent UUIDs."
+            ], 20, 200);
+
+            // Section 5
+            doc.addPage();
+            doc.setFontSize(16);
+            doc.setTextColor(37, 99, 235);
+            doc.text("5. Developer Guide: Adding New Inspection Types", 20, 20);
+            doc.setTextColor(0, 0, 0);
+            doc.setFontSize(11);
+            doc.text([
+                "Step 1: Create the target table in PostgreSQL with 'id' (UUID) and 'parent_id' (UUID).",
+                "Step 2: Attach the trigger to the parent table:",
+                "   CREATE TRIGGER tr_atomic_save BEFORE INSERT OR UPDATE ON [parent_table]",
+                "   FOR EACH ROW EXECUTE FUNCTION atomic_nested_insert_trigger();",
+                "Step 3: Update the 'form_templates' table with the new 'table_name'.",
+                "Step 4: Configure 'navigation_config' in the form builder to link forms.",
+                "",
+                "The frontend engine in Inspections.tsx will automatically detect the hierarchy",
+                "and bundle the data for the atomic save."
+            ], 20, 30);
+
+            doc.save("FireGuard_Technical_Documentation.pdf");
+        });
+    </script>
+</body>
+</html>

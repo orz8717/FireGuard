@@ -2,6 +2,7 @@
 import React from 'react';
 import { Inspection, InspectionType, InspectionStatus, Customer, User, UserRole, FormTemplate, FieldType } from '../types';
 import { dbService } from '../services/dbService';
+import { nestChildRecords } from '../utils/dataUtils';
 import { supabase } from '../services/supabaseClient';
 import { Plus, Search, Eye, Edit2, Loader2, ClipboardList, Clock, Trash2, Zap, Building, CreditCard, Fingerprint, Calendar } from 'lucide-react';
 import DynamicForm from '../components/DynamicForm';
@@ -127,6 +128,9 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
         
         // Inject temp ID into ROWID field
         newInitialValues['ROWID'] = tempId;
+        
+        // Clear pending children for new session
+        setPendingChildRecords({});
       }
 
       setSelectedType(type);
@@ -209,6 +213,41 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
       setSelectedType(isAnnual ? InspectionType.ANNUAL : (isSemi ? InspectionType.SEMI_ANNUAL : InspectionType.OTHER));
       setTemplate(foundTemplate);
       setInitialValues(draft.data);
+      if (draft.data?.pendingChildRecords) {
+        setPendingChildRecords(prev => {
+          // Merge local state with draft data to prevent losing records during transitions
+          const merged: Record<string, any[]> = {};
+          
+          // Sanitize draft data keys
+          Object.keys(draft.data.pendingChildRecords).forEach(table => {
+            let sanitizedTable = table;
+            if (sanitizedTable === 'כיבויים_הצי_שנתי' || sanitizedTable === 'הצי_שנתי') {
+              sanitizedTable = 'כיבויים_חצי_שנתי';
+            }
+            merged[sanitizedTable] = draft.data.pendingChildRecords[table];
+          });
+
+          Object.keys(prev).forEach(table => {
+            let sanitizedTable = table;
+            if (sanitizedTable === 'כיבויים_הצי_שנתי' || sanitizedTable === 'הצי_שנתי') {
+              sanitizedTable = 'כיבויים_חצי_שנתי';
+            }
+            
+            if (!merged[sanitizedTable]) {
+              merged[sanitizedTable] = prev[table];
+            } else {
+              // Add local records that aren't in the draft yet
+              const draftIds = new Set(merged[sanitizedTable].map((r: any) => r.id));
+              const newLocal = prev[table].filter(r => !draftIds.has(r.id));
+              merged[sanitizedTable] = [...merged[sanitizedTable], ...newLocal];
+            }
+          });
+          return merged;
+        });
+      } else {
+        // If no draft records, keep what we have in state (which might be newer)
+        // or clear if we are starting fresh (though handleContinueDraft implies we aren't)
+      }
       setEditingInspectionId(draft.editingInspectionId || null);
       setActiveDraftId(draft.id);
       setIsAdding(true);
@@ -237,6 +276,23 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
       // TASK: Set pending parent ID for existing record
       const parentRowId = inspection.data?.ROWID || inspection.inspectionSerialNumber || inspection.id;
       localStorage.setItem('pendingParentRowId', parentRowId);
+
+      // Load existing child data into pending state for atomic update
+      if (inspection.tempChildData) {
+        const restored: Record<string, any[]> = {};
+        Object.entries(inspection.tempChildData).forEach(([table, config]: [string, any]) => {
+          if (config.records) {
+            let sanitizedTable = table;
+            if (sanitizedTable === 'כיבויים_הצי_שנתי' || sanitizedTable === 'הצי_שנתי') {
+              sanitizedTable = 'כיבויים_חצי_שנתי';
+            }
+            restored[sanitizedTable] = config.records;
+          }
+        });
+        setPendingChildRecords(restored);
+      } else {
+        setPendingChildRecords({});
+      }
 
       setSelectedType(inspection.inspectionType);
       setTemplate(t);
@@ -273,7 +329,12 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
   };
 
   const handleCreate = async (data: Record<string, any>) => {
-    const targetTable = template?.tableName || 'inspections';
+    let targetTable = template?.tableName || 'inspections';
+    // FIX TYPO: Ensure the correct table name is used for the JSON key and database table
+    if (targetTable === 'כיבויים_הצי_שנתי' || targetTable === 'הצי_שנתי') {
+      targetTable = 'כיבויים_חצי_שנתי';
+    }
+    
     const isChildForm = !!localStorage.getItem('returnToDraftId');
     
     if (isChildForm) {
@@ -295,17 +356,38 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
 
       const newChildRecord = {
         ...data,
-        ROWID: parentRowId, // Link to parent (could be TEMP_...)
+        parent_id: parentRowId, // Rule C: Link to parent using parent_id
+        ROWID: data.ROWID || `local_${Date.now()}`, // Ensure child has its own ID for potential grandchildren
         id: `temp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
         created_at: new Date().toISOString(),
         _is_pending: true,
         _target_table: targetTable
       };
 
-      setPendingChildRecords(prev => ({
-        ...prev,
-        [targetTable]: [...(prev[targetTable] || []), newChildRecord]
-      }));
+      const updatedPending = {
+        ...pendingChildRecords,
+        [targetTable]: [...(pendingChildRecords[targetTable] || []), newChildRecord]
+      };
+      
+      setPendingChildRecords(updatedPending);
+
+      // TASK: Update the parent draft in Supabase immediately so child data isn't lost on reload
+      const returnDraftId = localStorage.getItem('returnToDraftId');
+      if (returnDraftId) {
+        try {
+          const { data: draft } = await supabase.from('inspection_drafts').select('data').eq('id', returnDraftId).single();
+          if (draft) {
+            await supabase.from('inspection_drafts').update({
+              data: {
+                ...draft.data,
+                pendingChildRecords: updatedPending
+              }
+            }).eq('id', returnDraftId);
+          }
+        } catch (e) {
+          console.error('[Draft Sync] Failed to update parent draft with child data:', e);
+        }
+      }
 
       // Update local summary for UI display in DynamicForm
       const summaryKey = `summary_${parentRowId}`;
@@ -318,7 +400,6 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
       }]));
 
       // Return to parent form
-      const returnDraftId = localStorage.getItem('returnToDraftId');
       localStorage.removeItem('returnToDraftId');
       if (returnDraftId) {
         await handleContinueDraft(returnDraftId);
@@ -328,9 +409,9 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
       return;
     }
 
-    // TASK 1.2: Final Save on Parent Form
-    console.log(`Initiating Final Save... Target Table: ${targetTable}`);
-    setSavingStatus(`שומר רשומה עליונה...`);
+    // TASK 1.2: Final Save on Parent Form (Atomic Single-Trip)
+    console.log(`Initiating Atomic Final Save... Target Table: ${targetTable}`);
+    setSavingStatus(`שומר נתונים באופן אטומי...`);
     setLoading(true);
     
     try {
@@ -343,22 +424,23 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
         serial = await dbService.generateInspectionSerialNumber(selectedType, template?.tableName);
       }
 
-      // CRITICAL: If we are using a TEMP ID, swap it to the real serial number in the parent's data
-      // This ensures the parent's ROWID column matches what the children will use.
+      // Sync TEMP ID to real serial
       if (tempParentId && String(finalData.ROWID).startsWith('TEMP_') && finalData.ROWID === tempParentId && serial) {
-        console.log(`[Sync] Swapping TEMP ROWID ${tempParentId} to Serial ${serial} in parent data`);
         finalData.ROWID = serial;
       }
 
-      // Phase 1: Prepare Parent Save Promise
-      const parentSavePromise = editingInspectionId 
-        ? dbService.updateInspection(editingInspectionId, {
+      // Bundle Child Data for the Trigger using Recursive Nesting
+      const bundledChildData = nestChildRecords(pendingChildRecords, tempParentId || '');
+
+      // Execute Atomic Save
+      const saveResult = editingInspectionId 
+        ? await dbService.updateInspection(editingInspectionId, {
             customerId: data.customerId || '',
             technicianId: user.id,
             inspectionDate: new Date().toISOString().split('T')[0],
             data: finalData
-          }, targetTable)
-        : dbService.addInspection({
+          }, targetTable, bundledChildData)
+        : await dbService.addInspection({
             inspectionSerialNumber: serial,
             inspectionType: selectedType,
             templateName: template?.name,
@@ -367,62 +449,9 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
             inspectionDate: new Date().toISOString().split('T')[0],
             status: InspectionStatus.SUBMITTED,
             data: finalData
-          }, targetTable);
+          }, targetTable, bundledChildData);
 
-      // Phase 3: Prepare Child Sync Function
-      const childSyncFn = async (parentData: any) => {
-        const parentDataObj = Array.isArray(parentData) ? parentData[0] : parentData;
-        
-        // CRITICAL FIX: The child records link via the ROWID column in the parent table.
-        // We must prioritize the ROWID from the saved parent data over the UUID 'id'.
-        const parentFriendlyId = parentDataObj.ROWID || 
-                                 parentDataObj.serial_number || 
-                                 parentDataObj.inspectionSerialNumber || 
-                                 parentDataObj.id;
-
-        console.log(`[Save Success] Parent saved. Link ID (parentFriendlyId): ${parentFriendlyId}`);
-        setSavingStatus(`רשומה עליונה נשמרה בהצלחה. מסנכרן נתונים מקושרים...`);
-
-        // Loop through local child records and Bulk Insert
-        const tablesToSync = Object.keys(pendingChildRecords);
-        if (tablesToSync.length > 0) {
-          setSavingStatus(`מסנכרן רשומות בנים (${tablesToSync.length} טבלאות)...`);
-          
-          for (const tableName of tablesToSync) {
-            const records = pendingChildRecords[tableName];
-            if (!records || records.length === 0) continue;
-
-            setSavingStatus(`שומר ${records.length} רשומות בטבלת ${tableName}...`);
-
-            const processedRecords = records.map(r => {
-              const { _is_pending, _target_table, id, ...cleanData } = r;
-              
-              // Replace Temporary ID with real ROWID
-              let finalRef = r.ROWID;
-              // If the record was linked to a TEMP_ ID, swap it with the REAL ID
-              if (tempParentId && String(finalRef).startsWith('TEMP_') && finalRef === tempParentId) {
-                finalRef = parentFriendlyId;
-              }
-
-              return {
-                ...cleanData,
-                ROWID: finalRef
-              };
-            });
-
-            console.log(`[Bulk Sync] Inserting ${processedRecords.length} records into ${tableName} with Parent ID: ${parentFriendlyId}`);
-            await dbService.bulkInsertIntoTable(tableName, processedRecords);
-          }
-          
-          // Clear pending records after successful sync
-          setPendingChildRecords({});
-        }
-      };
-
-      // Execute the safe sequential save (Parent -> Handshake -> Child)
-      const savedParent = await dbService.safeSequentialSave(targetTable, parentSavePromise, childSyncFn);
-      
-      const parentData = Array.isArray(savedParent) ? savedParent[0] : savedParent;
+      const parentData = Array.isArray(saveResult) ? saveResult[0] : saveResult;
       const parentFriendlyId = parentData.ROWID || parentData.serial_number || parentData.inspectionSerialNumber || parentData.id;
 
       // Cleanup session data
@@ -432,39 +461,35 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
         localStorage.removeItem(`summary_${tempParentId}`);
       }
 
-      // NEW: Delete the temporary skeleton record if it exists
-      // This removes the "ghost" record created during the skeleton save phase
+      // Delete the temporary skeleton record if it exists
       if (tempParentId && tempParentId.startsWith('TEMP_')) {
         try {
-          console.log(`[Cleanup] Attempting to delete temporary skeleton record with ROWID: ${tempParentId} from ${targetTable}`);
           await dbService.supabaseAdmin.from(targetTable).delete().eq('ROWID', tempParentId);
-        } catch (cleanupErr) {
-          console.error("[Cleanup] Failed to delete temporary record:", cleanupErr);
-        }
+        } catch (cleanupErr) {}
       }
 
-      await dbService.logActivity(user.name, 'CREATE_INSPECTION', `נוצרה ביקורת וסונכרנו רשומות בנים: ${parentFriendlyId}`);
+      await dbService.logActivity(user.name, 'CREATE_INSPECTION', `נוצרה ביקורת אטומית: ${parentFriendlyId}`);
       
-      // TRIGGER AUTOMATION BOTS
-      // Since we might be doing an UPDATE to a skeleton, we force an 'ADDS' event type 
-      // if this was a new inspection, to ensure the bot configured for ADDS triggers.
-      console.log(`[Automation] Triggering bots for ${targetTable} with ID: ${parentFriendlyId}`);
+      // Trigger Automation Bots
       dbService.triggerBots(targetTable, parentFriendlyId, 'ADDS');
 
-      alert(`הנתונים נשמרו בהצלחה!`);
+      if (typeof (window as any).triggerAppsScript === 'function') {
+        (window as any).triggerAppsScript(parentFriendlyId);
+      }
+
+      alert(`הנתונים נשמרו בהצלחה (שמירה אטומית)!`);
       setSavingStatus(null);
       setIsAdding(false);
       setEditingInspectionId(null);
+      setPendingChildRecords({});
       
       const url = new URL(window.location.href);
       url.searchParams.delete('parentRowId');
       window.history.pushState({}, '', url.toString());
       
-      // Targeted Sync: Pass the parent and child tables to loadData for efficient synchronization
-      const childTables = Object.keys(pendingChildRecords);
-      await loadData(targetTable, childTables[0]);
+      await loadData(targetTable);
     } catch (err: any) {
-      console.error(`Error in sequential save:`, err);
+      console.error(`Error in atomic save:`, err);
       alert(`שגיאה בשמירת הנתונים: ${err.message || 'שגיאה לא ידועה'}`);
       setSavingStatus(null);
     } finally {
@@ -539,6 +564,7 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
           key={activeDraftId} 
           template={fullTemplate} 
           initialValues={initialValues} 
+          pendingChildRecords={pendingChildRecords}
           onSubmit={handleCreate} 
           onCancel={() => { 
             const isFireSafety = template?.name?.includes('כיבויים');
@@ -586,8 +612,6 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
               }
 
               // Step 2 (The Storage - ONLY ON CLICK)
-              // Log the full data object to debug missing IDs
-              
               if (currentData) {
                 localStorage.setItem('parentFormData', JSON.stringify(currentData));
               }
@@ -603,72 +627,6 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
               if (recordId) {
                 localStorage.setItem('pendingParentRowId', recordId);
                 
-                // NEW: Skeleton save to parent table to satisfy FK constraints for children
-                if (!editingInspectionId) {
-                  const targetTable = template?.tableName || 'inspections';
-                  try {
-                    console.log(`[Skeleton Save] Creating parent record in ${targetTable} with ROWID: ${recordId}`);
-                    // Send only the ROWID as requested by the user
-                    const skeletonData = { ROWID: recordId };
-                    const saved = await dbService.addInspection({ data: skeletonData }, targetTable);
-                    const savedId = Array.isArray(saved) ? saved[0]?.id : saved?.id;
-                    if (savedId) {
-                      console.log(`[Skeleton Save] Success. Parent ID: ${savedId}`);
-                      setEditingInspectionId(savedId);
-                      
-                      // CRITICAL: Update the draft in Supabase to include the new editingInspectionId
-                      // This ensures that when we return from the child form, we update the existing record instead of creating a duplicate
-                      try {
-                        const { data: draft, error: fetchError } = await supabase
-                          .from('inspection_drafts')
-                          .select('data')
-                          .eq('user_id', user.id)
-                          .eq('table_name', template?.id)
-                          .maybeSingle();
-                          
-                        if (!fetchError && draft) {
-                          const updatedData = { ...draft.data, editingInspectionId: savedId };
-                          const { data: result, error: updateError } = await supabase
-                            .from('inspection_drafts')
-                            .upsert({ 
-                              user_id: user.id, 
-                              table_name: template?.id, 
-                              data: updatedData, 
-                              last_updated: new Date().toISOString() 
-                            }, { onConflict: 'user_id, table_name' })
-                            .select();
-                          
-                          if (updateError) throw updateError;
-                          if (!result || result.length === 0) {
-                            throw new Error(`Data sync failed for table: inspection_drafts`);
-                          }
-                          console.log(`[Skeleton Save] Updated Supabase draft with editingInspectionId: ${savedId}`);
-                        }
-                      } catch (e) {
-                        console.error("[Skeleton Save] Failed to update draft in Supabase:", e);
-                      }
-                    }
-                  } catch (err: any) {
-                    console.error("Skeleton save failed (might already exist):", err);
-                    // If it already exists (23505), try to find the existing record's ID to set editingInspectionId
-                    if (err.code === '23505') {
-                      try {
-                        const { data: existing } = await dbService.supabaseAdmin
-                          .from(targetTable)
-                          .select('id')
-                          .eq('ROWID', recordId)
-                          .maybeSingle();
-                        if (existing?.id) {
-                          console.log(`[Skeleton Save] Found existing record ID: ${existing.id}`);
-                          setEditingInspectionId(existing.id);
-                        }
-                      } catch (fetchErr) {
-                        console.error("Failed to fetch existing record after duplicate error:", fetchErr);
-                      }
-                    }
-                  }
-                }
-
                 // Also update URL for consistency
                 const url = new URL(window.location.href);
                 url.searchParams.set('parentRowId', recordId);

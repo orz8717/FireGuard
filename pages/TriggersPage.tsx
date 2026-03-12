@@ -7,7 +7,7 @@ import {
   Clock, Database, Activity, X, Save, Trash2, GitBranch, 
   Mail, MessageSquare, FileText, Globe, Edit3, ListPlus, 
   FolderOutput, ShieldAlert, ChevronDown, ChevronRight,
-  Terminal, Code2, Loader2, HelpCircle
+  Terminal, Code2, Loader2, HelpCircle, ShieldCheck, AlertTriangle
 } from 'lucide-react';
 
 interface TriggersPageProps {
@@ -95,6 +95,21 @@ const TriggersPage: React.FC<TriggersPageProps> = ({ user }) => {
   const [simulationLogs, setSimulationLogs] = useState<string[]>([]);
   const [generatingTemplate, setGeneratingTemplate] = useState(false);
 
+  const [schemaResults, setSchemaResults] = useState<any[]>([]);
+  const [checkingSchema, setCheckingSchema] = useState(false);
+
+  const runSchemaCheck = async () => {
+    setCheckingSchema(true);
+    try {
+      const results = await dbService.checkSchemaIntegrity();
+      setSchemaResults(results);
+    } catch (err) {
+      console.error('Schema check failed:', err);
+    } finally {
+      setCheckingSchema(false);
+    }
+  };
+
   const handleGenerateTemplate = async (stepId: string) => {
     if (!editingBot?.event.targetTable) {
       alert('אנא בחר טבלת יעד תחילה');
@@ -181,23 +196,24 @@ const TriggersPage: React.FC<TriggersPageProps> = ({ user }) => {
 
             const childData: Record<string, any[]> = {};
             if (editingBot.linked_child_tables) {
+              const parentId = rowData.id || rowData.ROWID || rowData.inspectionSerialNumber;
+              
               for (const tableName of editingBot.linked_child_tables) {
-                setSimulationLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] Fetching child records from ${tableName}...`]);
+                setSimulationLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] Fetching child records from ${tableName} using Parent ID: ${parentId}...`]);
                 
-                // Flexible fetch: Try to match standardized ROWID column
-                // We fetch all rows that belong to this parent
+                // Try to match by parent_id (UUID) or ROWID
                 const { data: children, error: childError } = await supabase
                   .from(tableName)
                   .select('*')
-                  .eq('ROWID', testRecordId);
+                  .or(`parent_id.eq."${parentId}",ROWID.eq."${parentId}"`);
                 
                 if (childError) {
                   console.warn(`[Simulation] Error fetching children for ${tableName}:`, childError);
-                  // Fallback to simple fetch
+                  // Fallback to simple fetch by parent_id
                   const { data: fallbackChildren } = await supabase
                     .from(tableName)
                     .select('*')
-                    .eq('ROWID', testRecordId);
+                    .eq('parent_id', parentId);
                   childData[tableName] = fallbackChildren || [];
                 } else {
                   childData[tableName] = children || [];
@@ -207,9 +223,84 @@ const TriggersPage: React.FC<TriggersPageProps> = ({ user }) => {
               }
             }
 
+            // --- NEW: 1:1 Dynamic Flattening Protocol (Indexed & Strict) ---
+            const combinedData: Record<string, string> = {};
+            const formatValue = (val: any) => (val === null || val === undefined) ? "" : String(val);
+            const cleanKey = (k: string) => k.replace(/[\[\]<>]/g, '');
+
+            // 1. Flatten Parent Data
+            Object.entries(rowData).forEach(([key, value]) => {
+              if (key === 'temp_child_data' || key.startsWith('_')) return;
+              combinedData[cleanKey(key)] = formatValue(value);
+            });
+
+            // 2. Process Child & Grandchild Data
+            const allChildren: any[] = [];
+            Object.values(childData).forEach(records => {
+              if (Array.isArray(records)) {
+                allChildren.push(...records);
+              }
+            });
+
+            if (rowData.temp_child_data) {
+              const tcd = typeof rowData.temp_child_data === 'string' ? JSON.parse(rowData.temp_child_data) : rowData.temp_child_data;
+              Object.values(tcd).forEach((config: any) => {
+                if (config.records && Array.isArray(config.records)) {
+                  allChildren.push(...config.records);
+                }
+              });
+            }
+
+            // Flatten all discovered children with indices
+            allChildren.forEach((childRecord, index) => {
+              const displayIndex = index + 1;
+              
+              // Flatten Child
+              Object.entries(childRecord).forEach(([cKey, cValue]) => {
+                if (cKey === 'temp_child_data' || cKey.startsWith('_')) return;
+                combinedData[`${cleanKey(cKey)}_${displayIndex}`] = formatValue(cValue);
+              });
+
+              // Flatten Nested Grandchild
+              if (childRecord.temp_child_data) {
+                const gcd = typeof childRecord.temp_child_data === 'string' ? JSON.parse(childRecord.temp_child_data) : childRecord.temp_child_data;
+                Object.values(gcd).forEach((gConfig: any) => {
+                  if (gConfig.records && Array.isArray(gConfig.records)) {
+                    gConfig.records.forEach((gRecord: any) => {
+                      Object.entries(gRecord).forEach(([gKey, gValue]) => {
+                        if (gKey === 'temp_child_data' || gKey.startsWith('_')) return;
+                        combinedData[`${cleanKey(gKey)}_${displayIndex}`] = formatValue(gValue);
+                      });
+                    });
+                  }
+                });
+              }
+            });
+
+            // Helper to replace placeholders in strings
+            const replacePlaceholders = (str: string | undefined) => {
+              if (!str) return str;
+              let result = str;
+              Object.entries(combinedData).forEach(([key, value]) => {
+                // Strict Format: <<key>>
+                const regex = new RegExp(`<<${key}>>`, 'g');
+                result = result.replace(regex, value);
+              });
+              return result;
+            };
+
+            const processedTask = {
+              ...step.task,
+              to: replacePlaceholders(step.task.to),
+              subject: replacePlaceholders(step.task.subject),
+              body: replacePlaceholders(step.task.body)
+            };
+
             // Execute the backend logic via GAS
             const payload = {
-              task: step.task,
+              templateId: step.task.googleDocTemplateId || step.task.templateId || editingBot.templateId,
+              task: processedTask,
+              combinedData: combinedData,
               rowData: rowData,
               childData: childData
             };
@@ -217,6 +308,7 @@ const TriggersPage: React.FC<TriggersPageProps> = ({ user }) => {
             console.log("[Automation Debug] Sending Payload to GAS URL:", GAS_WEB_APP_URL);
             console.log("[Automation Debug] Sending Payload to GAS:", payload);
             setSimulationLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] Sending payload to Google Apps Script...`]);
+            setSimulationLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] Combined Data Fields: ${Object.keys(combinedData).length}`]);
 
             try {
               // In simulation mode, we WANT to wait for the response to see logs.
@@ -477,6 +569,9 @@ const TriggersPage: React.FC<TriggersPageProps> = ({ user }) => {
           <button onClick={() => setActiveTab('history')} className={`flex-1 py-4 font-bold text-sm flex items-center justify-center gap-2 transition-colors ${activeTab === 'history' ? 'text-blue-600 border-b-2 border-blue-600 bg-blue-50/50' : 'text-slate-500 hover:bg-slate-50'}`}>
             <History size={18} /> היסטוריית ריצות
           </button>
+          <button onClick={() => setActiveTab('schema')} className={`flex-1 py-4 font-bold text-sm flex items-center justify-center gap-2 transition-colors ${activeTab === 'schema' ? 'text-blue-600 border-b-2 border-blue-600 bg-blue-50/50' : 'text-slate-500 hover:bg-slate-50'}`}>
+            <ShieldCheck size={18} /> תקינות מסד נתונים
+          </button>
         </div>
 
         <div className="p-6">
@@ -557,6 +652,69 @@ const TriggersPage: React.FC<TriggersPageProps> = ({ user }) => {
                   ))}
                 </tbody>
               </table>
+            </div>
+          )}
+
+          {activeTab === 'schema' && (
+            <div className="space-y-6">
+              <div className="flex justify-between items-center">
+                <div>
+                  <h3 className="text-lg font-black text-slate-800">בדיקת תקינות מסד הנתונים</h3>
+                  <p className="text-sm text-slate-500">וודא שכל הטבלאות מוגדרות נכון עבור שמירה אטומית ואוטומציות.</p>
+                </div>
+                <button 
+                  onClick={runSchemaCheck}
+                  disabled={checkingSchema}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-xl font-bold flex items-center gap-2 hover:bg-blue-700 transition-all disabled:opacity-50"
+                >
+                  {checkingSchema ? <Loader2 className="animate-spin" size={18} /> : <><ShieldCheck size={18} /> הרץ בדיקה</>}
+                </button>
+              </div>
+
+              {schemaResults.length > 0 ? (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {schemaResults.map((res, idx) => (
+                    <div key={idx} className={`p-4 rounded-2xl border ${res.errors.length > 0 ? 'border-red-200 bg-red-50/30' : 'border-emerald-200 bg-emerald-50/30'}`}>
+                      <div className="flex justify-between items-start mb-2">
+                        <div className="font-bold text-slate-800">{res.table}</div>
+                        {res.errors.length === 0 ? (
+                          <span className="text-[10px] font-black text-emerald-600 bg-emerald-100 px-2 py-0.5 rounded uppercase">תקין</span>
+                        ) : (
+                          <span className="text-[10px] font-black text-red-600 bg-red-100 px-2 py-0.5 rounded uppercase">שגיאה</span>
+                        )}
+                      </div>
+                      <div className="space-y-1 mb-3">
+                        <div className="flex items-center gap-2 text-xs">
+                          <div className={`w-2 h-2 rounded-full ${res.hasTempChildData ? 'bg-emerald-500' : 'bg-slate-300'}`} />
+                          <span className="text-slate-600">עמודת temp_child_data</span>
+                        </div>
+                        <div className="flex items-center gap-2 text-xs">
+                          <div className={`w-2 h-2 rounded-full ${res.hasTrgChildSync ? 'bg-emerald-500' : 'bg-slate-300'}`} />
+                          <span className="text-slate-600">טריגר trg_child_sync</span>
+                        </div>
+                        <div className="flex items-center gap-2 text-xs">
+                          <div className={`w-2 h-2 rounded-full ${res.hasParentId ? 'bg-emerald-500' : 'bg-slate-300'}`} />
+                          <span className="text-slate-600">עמודת parent_id</span>
+                        </div>
+                      </div>
+                      {res.errors.length > 0 && (
+                        <div className="mt-2 p-2 bg-white/50 rounded-lg border border-red-100">
+                          {res.errors.map((err: string, i: number) => (
+                            <div key={i} className="text-[10px] text-red-600 flex items-center gap-1">
+                              <AlertTriangle size={10} /> {err}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-center py-12 bg-slate-50 rounded-3xl border-2 border-dashed border-slate-200">
+                  <div className="text-slate-400 mb-2"><ShieldCheck size={48} className="mx-auto opacity-20" /></div>
+                  <div className="text-slate-500 font-medium">לחץ על "הרץ בדיקה" כדי לוודא שכל הטבלאות מוכנות לאוטומציה.</div>
+                </div>
+              )}
             </div>
           )}
         </div>

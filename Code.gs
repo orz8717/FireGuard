@@ -1,327 +1,236 @@
 /**
- * Google Apps Script Backend - FireGuard Israel (v9.0)
- * פתרון סופי ומקיף: חתימות, טקסט גמיש, שמות שדות, שם קובץ דינמי ויחסי Parent-Child.
+ * Google Apps Script for FireGuard Israel Automation Engine
+ * This script handles:
+ * 1. Template Generation (Auto-creating Google Docs with placeholders)
+ * 2. Document Injection (1:1 Search & Replace with Image/Signature support)
+ * 3. PDF Conversion & Email Delivery
  */
 
 function doPost(e) {
-  console.log("--- START REQUEST ---");
+  var logs = [];
   try {
-    if (!e || !e.postData || !e.postData.contents) {
-      console.error("Error: No data received.");
-      return createJsonResponse({ status: 'error', message: 'No data received' });
-    }
-    var data = JSON.parse(e.postData.contents);
-    console.log("Action: " + (data.action || "Automation Execution"));
+    var payload = JSON.parse(e.postData.contents);
+    logs.push("Payload received: " + JSON.stringify(payload).substring(0, 200) + "...");
 
-    if (data.action === 'generate_template') {
-      return handleGenerateTemplate(data);
+    // 1. Handle Template Generation Request
+    if (payload.action === 'generate_template') {
+      return ContentService.createTextOutput(JSON.stringify(generateTemplate(payload)))
+        .setMimeType(ContentService.MimeType.JSON);
     }
-    return handleAutomationExecution(data);
+
+    // 2. Handle Automation Task (Email/PDF)
+    var result = processAutomation(payload, logs);
+    return ContentService.createTextOutput(JSON.stringify(result))
+      .setMimeType(ContentService.MimeType.JSON);
+
   } catch (err) {
-    console.error("TOP LEVEL ERROR: " + err.toString());
-    return createJsonResponse({ status: 'error', message: err.toString() });
+    return ContentService.createTextOutput(JSON.stringify({
+      status: 'error',
+      message: err.toString(),
+      logs: logs
+    })).setMimeType(ContentService.MimeType.JSON);
   }
 }
 
 /**
- * יצירת שבלונה עם תמיכה בטבלאות מקושרות (Parent-Child)
+ * Generates a new Google Doc template with all placeholders from the database schema.
+ * Follows Strict Format: <<field_name>> (No square brackets, no extra characters).
  */
-function handleGenerateTemplate(data) {
-  var tableName = data.tableName || "Parent_Table";
-  var columns = data.columns || [];
-  var linkedTables = data.linkedTables || []; // Array of { tableName, columns }
-
-  var doc = DocumentApp.create("Template for " + tableName);
+function generateTemplate(payload) {
+  var doc = DocumentApp.create('שבלונה - ' + payload.tableName);
   var body = doc.getBody();
+  
+  // Set document to RTL direction if possible (Hebrew support)
+  // Note: DocumentApp doesn't have a global RTL setting, but we set paragraph alignment.
+  
+  body.appendParagraph('שבלונה אוטומטית עבור טבלה: ' + payload.tableName)
+      .setHeading(DocumentApp.ParagraphHeading.HEADING1)
+      .setAlignment(DocumentApp.HorizontalAlignment.RIGHT);
+  
+  body.appendParagraph('הוראות:').setHeading(DocumentApp.ParagraphHeading.HEADING2).setAlignment(DocumentApp.HorizontalAlignment.RIGHT);
+  body.appendParagraph('1. עצב את המסמך כרצונך.').setAlignment(DocumentApp.HorizontalAlignment.RIGHT);
+  body.appendParagraph('2. השאר את השדות בתוך סוגריים כפולים <<שם_עמודה>>.').setAlignment(DocumentApp.HorizontalAlignment.RIGHT);
+  body.appendParagraph('3. עבור חתימות או תמונות, השתמש בשם העמודה המתאים (למשל <<technician_signature>>).').setAlignment(DocumentApp.HorizontalAlignment.RIGHT);
+  body.appendParagraph('4. עבור טבלאות ציוד (Child), השתמש באינדקסים: <<שם_עמודה_1>>, <<שם_עמודה_2>> וכו\'.').setAlignment(DocumentApp.HorizontalAlignment.RIGHT);
 
-  // Parent Section
-  body.appendParagraph("FireGuard Israel - Automation Template").setHeading(DocumentApp.ParagraphHeading.HEADING1);
-  body.appendParagraph("Parent Table: " + tableName).setHeading(DocumentApp.ParagraphHeading.HEADING2);
-  body.appendHorizontalRule();
-  body.appendParagraph("Parent Placeholders:").setBold(true);
-  columns.forEach(function(col) { body.appendParagraph("<<[" + col + "]>>"); });
+  body.appendParagraph('שדות ראשיים (Parent):').setHeading(DocumentApp.ParagraphHeading.HEADING2).setAlignment(DocumentApp.HorizontalAlignment.RIGHT);
+  payload.columns.forEach(function(col) {
+    // Strict Format: Remove any brackets or extra chars from column name
+    var cleanCol = col.replace(/[\[\]<>]/g, '');
+    var placeholder = '<<' + cleanCol + '>>';
+    // RTL Sanity: Insert as single continuous string
+    body.appendParagraph(placeholder).setAlignment(DocumentApp.HorizontalAlignment.RIGHT);
+  });
+  
+  if (payload.linkedTables && payload.linkedTables.length > 0) {
+    payload.linkedTables.forEach(function(lt) {
+      body.appendParagraph('טבלה מקושרת: ' + lt.tableName).setHeading(DocumentApp.ParagraphHeading.HEADING2).setAlignment(DocumentApp.HorizontalAlignment.RIGHT);
+      
+      // Generate sample indexed placeholders (Rows 1-3) to match flattenData output
+      for (var i = 1; i <= 3; i++) {
+        body.appendParagraph('שורה ' + i + ':').setBold(true).setAlignment(DocumentApp.HorizontalAlignment.RIGHT);
+        lt.columns.forEach(function(col) {
+          var cleanCol = col.replace(/[\[\]<>]/g, '');
+          var placeholder = '<<' + cleanCol + '_' + i + '>>';
+          body.appendParagraph(placeholder).setAlignment(DocumentApp.HorizontalAlignment.RIGHT);
+        });
+        body.appendParagraph('').setAlignment(DocumentApp.HorizontalAlignment.RIGHT);
+      }
+      body.appendParagraph('... המשך עד 150 שורות לפי הצורך ...').setItalic(true).setAlignment(DocumentApp.HorizontalAlignment.RIGHT);
+    });
+  }
+  
+  return { status: 'success', docId: doc.getId(), url: doc.getUrl() };
+}
 
-  // Child Sections (Repeating Blocks)
-  linkedTables.forEach(function(lt) {
-    body.appendHorizontalRule();
-    body.appendParagraph("<<Start:" + lt.tableName + ">>").setBold(true).setForegroundColor('#cc0000');
+/**
+ * Main automation logic: Search & Replace + PDF + Email
+ */
+function processAutomation(payload, logs) {
+  var task = payload.task || {};
+  var combinedData = payload.combinedData || {};
+  var templateId = payload.templateId || task.googleDocTemplateId || task.templateId;
+
+  if (!templateId) {
+    throw new Error("Missing Google Doc Template ID");
+  }
+
+  logs.push("Opening template: " + templateId);
+  var templateFile = DriveApp.getFileById(templateId);
+  var fileName = 'דוח - ' + (combinedData.inspectionSerialNumber || combinedData.id || 'ביקורת');
+  var tempFile = templateFile.makeCopy(fileName);
+  var doc = DocumentApp.openById(tempFile.getId());
+  
+  var body = doc.getBody();
+  var header = doc.getHeader();
+  var footer = doc.getFooter();
+
+  // 1:1 Global Replacement
+  logs.push("Starting 1:1 replacement for " + Object.keys(combinedData).length + " fields");
+  
+  Object.entries(combinedData).forEach(function([key, value]) {
+    // Strict Format: <<key>>
+    var placeholder = '<<' + key + '>>';
     
-    var table = body.appendTable();
-    var headerRow = table.appendTableRow();
-    lt.columns.forEach(function(col) {
-      headerRow.appendTableCell(col).setBackgroundColor('#f3f3f3').getChild(0).asParagraph().setBold(true);
-    });
-    
-    var dataRow = table.appendTableRow();
-    lt.columns.forEach(function(col) {
-      dataRow.appendTableCell("<<[" + col + "]>>");
-    });
-    
-    body.appendParagraph("<<End>>").setBold(true).setForegroundColor('#cc0000');
+    // Handle Images / Signatures (Base64)
+    if (typeof value === 'string' && value.indexOf('data:image/') === 0) {
+      logs.push("Injecting image for: " + key);
+      injectImage(body, placeholder, value);
+      if (header) injectImage(header, placeholder, value);
+      if (footer) injectImage(footer, placeholder, value);
+    } else {
+      // Standard Text Replacement
+      var safeValue = (value === null || value === undefined) ? "" : String(value);
+      body.replaceText(placeholder, safeValue);
+      if (header) header.replaceText(placeholder, safeValue);
+      if (footer) footer.replaceText(placeholder, safeValue);
+    }
   });
 
   doc.saveAndClose();
-  return createJsonResponse({ status: 'success', fileId: doc.getId(), fileUrl: DriveApp.getFileById(doc.getId()).getUrl() });
-}
+  logs.push("Document saved and closed.");
 
-/**
- * הרצת אוטומציה עם תמיכה בשכפול שורות דינמי
- */
-function handleAutomationExecution(data) {
-  var task = data.task || {};
-  var rowData = data.rowData || {};
-  var childData = data.childData || {}; // { "TableName": [ {col: val}, ... ] }
-  
-  var templateId = task.googleDocTemplateId || data.templateId;
-  var rawSubject = task.subject || data.subject || "FireGuard Report";
-  var rawBody = task.body || data.body || "";
-  var rawRecipients = task.to || data.recipients || "";
-  var rawAttachmentName = task.attachmentName || data.attachmentName || "";
-  var attachPdf = (task.attachment === true || data.attachPdf === true);
+  // Convert to PDF
+  var pdfBlob = tempFile.getAs(MimeType.PDF);
+  pdfBlob.setName(fileName + '.pdf');
 
-  if (!templateId) throw new Error("Missing Template ID");
-
-  var parentRowId = rowData.ROWID || rowData.id || rowData.inspectionSerialNumber;
-
-  var templateFile = DriveApp.getFileById(templateId);
-  var tempFile = templateFile.makeCopy('Report_' + new Date().getTime());
-  var tempDoc = DocumentApp.openById(tempFile.getId());
-  var body = tempDoc.getBody();
-
-  // 1. Process Dynamic Blocks (Child Tables)
-  processDynamicBlocks(body, childData, parentRowId);
-
-  // 2. Merge Parent Data
-  mergeData(body, rowData);
-  
-  tempDoc.saveAndClose();
-
-  var subject = fillPlaceholders(rawSubject, rowData);
-  var bodyText = fillPlaceholders(rawBody, rowData);
-  var recipientsStr = fillPlaceholders(rawRecipients, rowData);
-  var attachmentName = fillPlaceholders(rawAttachmentName, rowData);
-
-  var attachments = [];
-  if (attachPdf) {
-    var pdfBlob = DriveApp.getFileById(tempFile.getId()).getBlob().getAs('application/pdf');
-    var finalFileName = attachmentName ? attachmentName : templateFile.getName() + ".pdf";
-    if (finalFileName.toLowerCase().indexOf(".pdf") === -1) finalFileName += ".pdf";
-    pdfBlob.setName(finalFileName);
-    attachments.push(pdfBlob);
-  }
-
-  var recipientList = recipientsStr.split(',').map(function(email) { return email.trim(); });
-  recipientList.forEach(function(email) {
-    if (email && email.indexOf('@') > -1) {
-      try {
-        GmailApp.sendEmail(email, subject, bodyText, { attachments: attachments });
-      } catch (e) {
-        console.error("Send failed for " + email + ": " + e.toString());
-      }
-    }
-  });
-
-  DriveApp.getFileById(tempFile.getId()).setTrashed(true);
-  return createJsonResponse({ status: 'success' });
-}
-
-/**
- * סורק את המסמך לבלוקים של Start/End ומשכפל תוכן
- */
-function processDynamicBlocks(body, childData, parentRowId) {
-  var startRegex = "<<Start:([^>]+)>>";
-  var endMarker = "<<End>>";
-  
-  var startFound = body.findText(startRegex);
-  
-  while (startFound) {
-    var startElement = startFound.getElement();
-    var startText = startElement.asText().getText();
-    var tableNameMatch = startText.match(/<<Start:([^>]+)>>/);
-    if (!tableNameMatch) {
-        startFound = body.findText(startRegex, startFound);
-        continue;
-    }
-    var tableName = tableNameMatch[1].trim();
-    
-    var endFound = body.findText(endMarker, startFound);
-    if (!endFound) break;
-
-    var rows = childData[tableName] || [];
-    
-    // TASK 3: Flexible Join Logic
-    if (rows.length > 0 && parentRowId) {
-      rows = rows.filter(function(row) {
-        var refKeys = ['ROWID'];
-        for (var i = 0; i < refKeys.length; i++) {
-          if (row[refKeys[i]] && String(row[refKeys[i]]).trim() === String(parentRowId).trim()) {
-            return true;
-          }
-        }
-        return false;
-      });
-    }
-    
-    if (rows.length === 0) {
-      removeContentBetween(body, startFound, endFound);
-    } else {
-      duplicateAndFill(body, startFound, endFound, rows);
-    }
-    
-    startFound = body.findText(startRegex);
-  }
-}
-
-/**
- * משכפל את התוכן שבין התגיות עבור כל שורה בנתונים
- */
-function duplicateAndFill(body, startRange, endRange, rows) {
-  var startElement = startRange.getElement();
-  var endElement = endRange.getElement();
-  
-  var parent = startElement.getParent();
-  var startIndex = parent.getChildIndex(startElement);
-  var endIndex = parent.getChildIndex(endElement);
-  
-  // זיהוי האלמנטים לשכפול
-  var elementsToCopy = [];
-  for (var i = startIndex + 1; i < endIndex; i++) {
-    elementsToCopy.push(parent.getChild(i).copy());
-  }
-  
-  var insertionIndex = endIndex;
-  rows.forEach(function(rowData) {
-    elementsToCopy.forEach(function(el) {
-      var newEl = el.copy();
-      var inserted;
-      if (newEl.getType() == DocumentApp.ElementType.TABLE) {
-        inserted = parent.insertTable(insertionIndex, newEl.asTable());
-      } else if (newEl.getType() == DocumentApp.ElementType.PARAGRAPH) {
-        inserted = parent.insertParagraph(insertionIndex, newEl.asParagraph());
-      } else if (newEl.getType() == DocumentApp.ElementType.LIST_ITEM) {
-        inserted = parent.insertListItem(insertionIndex, newEl.asListItem());
-      }
-      
-      if (inserted) {
-        mergeData(inserted, rowData);
-        insertionIndex++;
-      }
-    });
-  });
-  
-  // הסרת הבלוק המקורי והתגיות
-  for (var i = endIndex; i >= startIndex; i--) {
-    parent.removeChild(parent.getChild(i));
-  }
-}
-
-function removeContentBetween(body, startRange, endRange) {
-  var startElement = startRange.getElement();
-  var endElement = endRange.getElement();
-  var parent = startElement.getParent();
-  var startIndex = parent.getChildIndex(startElement);
-  var endIndex = parent.getChildIndex(endElement);
-  
-  for (var i = endIndex; i >= startIndex; i--) {
-    parent.removeChild(parent.getChild(i));
-  }
-}
-
-function mergeData(container, data) {
-  for (var key in data) {
-    var value = data[key];
-    if (value === null || value === undefined) value = "";
-    
-    var isSignatureField = key.toLowerCase().includes("חתימה") || key.toLowerCase().includes("signature");
-    var isImageData = typeof value === 'string' && (value.indexOf("data:image/") === 0 || (value.length > 500 && !value.includes(" ")));
-
-    if (isSignatureField || isImageData) {
-      processFlexibleImagePlaceholder(container, key, value);
-    } else {
-      replaceTextFlexibly(container, key, String(value));
-    }
-  }
-}
-
-function fillPlaceholders(text, data) {
-  if (!text) return "";
-  return text.replace(/<{2,3}\[?([^\]>|\n]+)\]?([>|<]{2,3})/g, function(match, key) {
-    var cleanKey = key.trim();
-    var val = findValueInRowData(cleanKey, data);
-    if (val !== undefined) {
-      if (typeof val === 'string' && (val.indexOf('data:image/') === 0 || val.length > 1000)) return "[חתימה]";
-      return (val === null) ? "" : String(val);
-    }
-    return match;
-  });
-}
-
-function findValueInRowData(key, data) {
-  if (data.hasOwnProperty(key)) return data[key];
-  var normalizedKey = key.replace(/_/g, ' ').trim();
-  for (var k in data) {
-    if (k.replace(/_/g, ' ').trim() === normalizedKey) return data[k];
-  }
-  return undefined;
-}
-
-function processFlexibleImagePlaceholder(container, key, base64Data) {
-  var escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  // רגקס גמיש שתופס <<[שדה]>>, <<שדה>>, <<<[שדה]>>> וגם סגירות לא עקביות כמו <<[שדה]<<
-  var placeholderRegex = "<{2,3}\\[?" + escapedKey + "\\]?[>|<]{2,3}";
-  
-  var rangeElement = container.findText(placeholderRegex);
-  
-  while (rangeElement) {
+  // Handle File Storage
+  if (task.filePath) {
+    logs.push("Saving PDF to folder: " + task.filePath);
     try {
-      var element = rangeElement.getElement();
-      var base64String = base64Data.indexOf(',') > -1 ? base64Data.split(',')[1] : base64Data;
-      var contentType = base64Data.indexOf(',') > -1 ? base64Data.split(',')[0].split(':')[1].split(';')[0] : "image/png";
-      var decodedData = Utilities.base64Decode(base64String);
-      var blob = Utilities.newBlob(decodedData, contentType);
-
-      var image = null;
-      var parent = element.getParent();
-      
-      if (parent.getType() === DocumentApp.ElementType.PARAGRAPH) {
-        var index = parent.getChildIndex(element);
-        image = parent.asParagraph().insertInlineImage(index, blob);
-      } else if (parent.getType() === DocumentApp.ElementType.TABLE_CELL) {
-        image = parent.asTableCell().appendImage(blob);
-      }
-
-      if (image) {
-        var maxWidth = 150;
-        var ratio = image.getWidth() / image.getHeight();
-        image.setWidth(maxWidth);
-        image.setHeight(maxWidth / ratio);
-      }
-
-      element.asText().deleteText(rangeElement.getStartOffset(), rangeElement.getEndOffsetInclusive());
-      rangeElement = container.findText(placeholderRegex, rangeElement);
+      var folder = getOrCreateFolder(task.filePath);
+      folder.createFile(pdfBlob);
     } catch (e) {
-      console.error("Image error: " + e.toString());
-      break;
+      logs.push("Warning: Could not save to folder: " + e.toString());
     }
+  }
+
+  // Handle Email Delivery
+  if (task.type === 'EMAIL' && task.to) {
+    logs.push("Sending email to: " + task.to);
+    var subject = task.subject || 'דוח ביקורת - ' + (combinedData.inspectionSerialNumber || '');
+    var emailBody = task.body || 'מצורף דוח ביקורת.';
+    
+    // Replace placeholders in subject and body too
+    Object.entries(combinedData).forEach(function([k, v]) {
+      var p = '<<' + k + '>>';
+      subject = subject.replace(new RegExp(p, 'g'), v);
+      emailBody = emailBody.replace(new RegExp(p, 'g'), v);
+    });
+
+    var mailOptions = {
+      name: 'FireGuard Israel Automation',
+      attachments: [pdfBlob]
+    };
+    if (task.cc) mailOptions.cc = task.cc;
+    if (task.bcc) mailOptions.bcc = task.bcc;
+
+    MailApp.sendEmail(task.to, subject, emailBody, mailOptions);
+    logs.push("Email sent successfully.");
+  }
+
+  // Cleanup
+  tempFile.setTrashed(true);
+  logs.push("Temporary file deleted.");
+
+  return {
+    status: 'success',
+    message: 'Automation completed successfully',
+    logs: logs
+  };
+}
+
+/**
+ * Injects an image into the document at the placeholder's location
+ */
+function injectImage(container, placeholder, base64Data) {
+  var next = container.findText(placeholder);
+  if (!next) return;
+
+  try {
+    var textElement = next.getElement();
+    var offset = next.getStartOffset();
+    
+    // Decode base64
+    var contentType = base64Data.split(';')[0].split(':')[1];
+    var bytes = Utilities.base64Decode(base64Data.split(',')[1]);
+    var imageBlob = Utilities.newBlob(bytes, contentType);
+    
+    var parent = textElement.getParent();
+    if (parent.getType() === DocumentApp.ElementType.PARAGRAPH) {
+      var img = parent.asParagraph().insertInlineImage(offset, imageBlob);
+      
+      // Maintain reasonable dimensions (e.g., max width 200px for signatures)
+      var width = img.getWidth();
+      var height = img.getHeight();
+      var ratio = width / height;
+      
+      if (width > 200) {
+        img.setWidth(200);
+        img.setHeight(200 / ratio);
+      }
+
+      // Remove the placeholder text
+      textElement.asText().deleteText(offset, offset + placeholder.length - 1);
+    }
+  } catch (e) {
+    container.replaceText(placeholder, "[Error Injecting Image]");
   }
 }
 
-function replaceTextFlexibly(container, key, value) {
-  var escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  var patterns = [
-    '<<\\[' + escapedKey + '\\]>>',
-    '<<' + escapedKey + '>>',
-    '<<<\\[' + escapedKey + '\\]>>>',
-    '<<\\[' + escapedKey + '\\]<<'
-  ];
-  
-  patterns.forEach(function(pattern) {
-    try {
-      container.replaceText(pattern, value);
-    } catch (e) {}
-  });
-}
-
-function createJsonResponse(obj) {
-  return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
+/**
+ * Helper to find or create a folder path in Drive
+ */
+function getOrCreateFolder(path) {
+  var parts = path.split('/').filter(function(p) { return p.length > 0; });
+  var folder = DriveApp.getRootFolder();
+  for (var i = 0; i < parts.length; i++) {
+    var subFolders = folder.getFoldersByName(parts[i]);
+    if (subFolders.hasNext()) {
+      folder = subFolders.next();
+    } else {
+      folder = folder.createFolder(parts[i]);
+    }
+  }
+  return folder;
 }

@@ -3,7 +3,6 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700&display=swap');
 
 @theme {
-  /* הגדרת הצבעים המדויקים שראינו בתמונות שלך */
   --color-slate-50: #f8fafc;
   --color-slate-200: #e2e8f0;
   --color-slate-700: #334155;
@@ -16,60 +15,63 @@
 
 @layer base {
   html {
-    background-color: var(--color-slate-900);
-    color: var(--color-slate-200);
+    /* רקע בהיר לכל האתר */
+    background-color: #ffffff; 
+    color: #0f172a;
   }
 
   body {
-    background-color: var(--color-slate-900);
+    background-color: #f8fafc; /* רקע אפור בהיר מאוד ונעים */
     font-family: var(--font-sans);
     min-height: 100vh;
     margin: 0;
+    color: #0f172a;
   }
 }
 
-/* עיצוב פאנלים בסגנון זכוכית (Glassmorphism) כמו ביומן הפעילות */
+/* פאנלים בהירים ונקיים במקום זכוכית כהה */
 .glass-panel {
-  background-color: rgba(30, 41, 59, 0.5);
-  border: 1px solid rgba(51, 65, 85, 0.5);
-  backdrop-filter: blur(4px);
+  background-color: #ffffff;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
   border-radius: 0.75rem;
 }
 
-/* סרגל גלילה מותאם ל-Dark Mode */
+@layer base {
+  /* הגדרה גלובלית לכל הטפסים - שחור על לבן */
+  input, select, textarea, input[type="search"] {
+    background-color: #ffffff !important;
+    color: #0f172a !important;
+    border: 1px solid #cbd5e1 !important;
+  }
+
+  /* כותרות השדות (Labels) - תמיד שחור מודגש */
+  label {
+    color: #0f172a !important;
+    font-weight: 700 !important;
+  }
+
+  /* טקסט עזרה (Placeholders) - אפור כהה קריא */
+  ::placeholder {
+    color: #64748b !important;
+    opacity: 1 !important;
+  }
+
+  /* ביטול מוחלט של הגדרות ה-Dark Mode שהיו לך */
+  .dark, .dark body, .dark input, .dark select, .dark label {
+    background-color: #ffffff !important;
+    color: #0f172a !important;
+  }
+}
+
+/* סרגל גלילה עדין יותר שמתאים למראה בהיר */
 ::-webkit-scrollbar {
   width: 6px;
 }
-
 ::-webkit-scrollbar-track {
-  background: var(--color-slate-900);
+  background: #f1f5f9;
 }
-
 ::-webkit-scrollbar-thumb {
-  background: var(--color-slate-700);
+  background: #cbd5e1;
   border-radius: 10px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: var(--color-slate-800);
-}
-
-@layer base {
-  /* תיקון צבע הטקסט המוקלד בכל השדות */
-  input, select, textarea {
-    @apply text-slate-900;
-    color: #1e293b !important; /* Slate 800 */
-  }
-
-  /* תיקון ספציפי לכיתוב ה-Placeholder (בחר לקוח...) */
-  ::placeholder {
-    color: #475569 !important; /* Slate 600 - כהה וברור */
-    opacity: 1 !important;     /* מבטל שקיפות של דפדפנים */
-  }
-
-  /* עבור דפדפני Safari ו-Chrome ישנים */
-  ::-webkit-input-placeholder {
-    color: #475569 !important;
-    opacity: 1 !important;
-  }
 }

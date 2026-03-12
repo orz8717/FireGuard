@@ -56,6 +56,99 @@ class DBService {
     return this.syncData(userName);
   }
 
+  async checkSchemaIntegrity() {
+    const results: {
+      table: string;
+      hasTempChildData: boolean;
+      hasTrgChildSync: boolean;
+      hasParentId: boolean;
+      isParent: boolean;
+      isChild: boolean;
+      errors: string[];
+    }[] = [];
+
+    try {
+      // 1. Get all tables and their columns
+      const { data: columns, error: colError } = await supabaseAdmin
+        .from('information_schema.columns')
+        .select('table_name, column_name, data_type')
+        .eq('table_schema', 'public');
+
+      if (colError) throw colError;
+
+      // 2. Get all triggers
+      const { data: triggers, error: trgError } = await supabaseAdmin.rpc('get_triggers');
+      // If RPC doesn't exist, we'll try a fallback or just skip trigger check with a warning
+      
+      const tables = Array.from(new Set(columns.map(c => c.table_name)));
+      
+      // 3. Get form templates to identify parent/child relationships
+      const templates = await this.getFormTemplates();
+      const parentTables = new Set(templates.filter(t => t.navigation_config?.enabled).map(t => t.tableName).filter(Boolean));
+      const childTables = new Set(templates.filter(t => t.navigation_config?.targetTemplateId).map(t => {
+        const target = templates.find(tmp => tmp.id === t.navigation_config?.targetTemplateId);
+        return target?.tableName;
+      }).filter(Boolean));
+
+      for (const table of tables) {
+        const tableCols = columns.filter(c => c.table_name === table);
+        const hasTempChildData = tableCols.some(c => c.column_name === 'temp_child_data');
+        const hasParentId = tableCols.some(c => c.column_name === 'parent_id');
+        const isParent = parentTables.has(table) || table === 'inspections';
+        const isChild = childTables.has(table);
+        
+        const tableTriggers = triggers ? triggers.filter((t: any) => t.table_name === table) : [];
+        const hasTrgChildSync = tableTriggers.some((t: any) => t.trigger_name === 'trg_child_sync' || t.trigger_name === 'tr_atomic_save');
+
+        const errors: string[] = [];
+        if (isParent && !hasTempChildData) {
+          errors.push(`Missing 'temp_child_data' (JSONB) column.`);
+        }
+        if (isParent && !hasTrgChildSync) {
+          errors.push(`Missing 'trg_child_sync' trigger.`);
+        }
+        if (isChild && !hasParentId) {
+          errors.push(`Missing 'parent_id' (UUID) column.`);
+        }
+
+        if (isParent || isChild) {
+          results.push({
+            table,
+            hasTempChildData,
+            hasTrgChildSync,
+            hasParentId,
+            isParent,
+            isChild,
+            errors
+          });
+        }
+      }
+
+      return results;
+    } catch (err) {
+      console.error('Schema check failed:', err);
+      throw err;
+    }
+  }
+
+  async testWebhook() {
+    const webhookUrl = process.env.VITE_APPS_SCRIPT_URL || 'https://script.google.com/macros/s/AKfycbx.../exec';
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      
+      const response = await fetch(webhookUrl, { 
+        method: 'HEAD', 
+        mode: 'no-cors',
+        signal: controller.signal 
+      });
+      clearTimeout(timeoutId);
+      return { ok: true, status: 'Reachable (Opaque)' };
+    } catch (err: any) {
+      return { ok: false, status: err.name === 'AbortError' ? 'Timeout' : 'Unreachable' };
+    }
+  }
+
   private generateRandomId(length: number = 8): string {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
     let result = '';
@@ -174,9 +267,20 @@ class DBService {
 
   async saveToTable(tableName: string, payload: any, useAdmin: boolean = false) {
     const client = useAdmin ? supabaseAdmin : supabase;
+    
+    // Determine the conflict target. 
+    // We prioritize business keys (ROWID for dynamic tables, serial_number for inspections)
+    // to prevent "duplicate key" errors during atomic saves or draft promotions.
+    const options: any = { onConflict: 'id' };
+    if (payload.ROWID) {
+      options.onConflict = 'ROWID';
+    } else if (payload.serial_number) {
+      options.onConflict = 'serial_number';
+    }
+
     const { data, error } = await client
       .from(tableName)
-      .upsert(payload)
+      .upsert(payload, options)
       .select();
 
     if (error) {
@@ -438,12 +542,13 @@ class DBService {
       inspectionDate: item.inspection_date,
       status: item.status as InspectionStatus,
       data: item.data,
+      tempChildData: item.temp_child_data,
       createdAt: item.created_at,
       updatedAt: item.updated_at
     }));
   }
 
-  async addInspection(inspection: Partial<Inspection>, tableName: string = 'inspections') {
+  async addInspection(inspection: Partial<Inspection>, tableName: string = 'inspections', childData?: Record<string, any[]>) {
     console.log(`[DB] Initiating addInspection. Target Table: ${tableName}`);
     if (tableName && tableName !== 'inspections') {
       const columns = await this.getTableColumns(tableName);
@@ -461,6 +566,9 @@ class DBService {
             payload[key] = rawData[key];
           }
         });
+        if (childData) {
+          payload['temp_child_data'] = childData;
+        }
       } else {
         // Fallback if we can't get columns: remove known system fields that often cause issues
         Object.assign(payload, rawData);
@@ -469,6 +577,9 @@ class DBService {
         delete payload.inspectionDate;
         delete payload.status;
         delete payload.templateName;
+        if (childData) {
+          payload['temp_child_data'] = childData;
+        }
       }
 
       console.log(`[DB] Final Payload for custom table '${tableName}':`, payload);
@@ -485,8 +596,9 @@ class DBService {
       status: inspection.status,
       data: {
         ...inspection.data,
-        templateName: inspection.templateName // Store template name in the JSON data
-      }
+        templateName: inspection.templateName, // Store template name in the JSON data
+      },
+      temp_child_data: childData || {}
     };
 
     // Fix 22P02 error: invalid input syntax for type uuid: ""
@@ -498,7 +610,7 @@ class DBService {
     return await this.saveToTable(tableName, payload, true);
   }
 
-  async updateInspection(id: string, inspection: Partial<Inspection>, tableName: string = 'inspections') {
+  async updateInspection(id: string, inspection: Partial<Inspection>, tableName: string = 'inspections', childData?: Record<string, any[]>) {
     console.log(`[DB] Initiating updateInspection. Target Table: ${tableName}, ID: ${id}`);
     if (tableName && tableName !== 'inspections') {
       const columns = await this.getTableColumns(tableName);
@@ -513,6 +625,9 @@ class DBService {
             payload[key] = rawData[key];
           }
         });
+        if (childData) {
+          payload['temp_child_data'] = childData;
+        }
       } else {
         Object.assign(payload, rawData);
         delete payload.customerId;
@@ -520,6 +635,9 @@ class DBService {
         delete payload.inspectionDate;
         delete payload.status;
         delete payload.templateName;
+        if (childData) {
+          payload['temp_child_data'] = childData;
+        }
       }
 
       console.log(`[DB] Final Payload for custom table '${tableName}':`, payload);
@@ -534,8 +652,12 @@ class DBService {
     if (inspection.data !== undefined) {
       payload.data = {
         ...inspection.data,
-        templateName: inspection.templateName || inspection.data.templateName
+        templateName: inspection.templateName || inspection.data.templateName,
       };
+    }
+    
+    if (childData) {
+      payload.temp_child_data = childData;
     }
 
     console.log(`[DB] Final Payload for default table 'inspections':`, payload);
@@ -752,14 +874,20 @@ class DBService {
   }
 
   async updateFormTemplate(id: string, updates: Partial<FormTemplate>) {
-    const payload: any = { id };
+    const payload: any = {};
     if (updates.name !== undefined) payload.name = updates.name;
     if (updates.description !== undefined) payload.description = updates.description;
     if (updates.isActive !== undefined) payload.is_active = updates.isActive;
     if (updates.tableName !== undefined) payload.table_name = updates.tableName;
     if (updates.navigation_config !== undefined) payload.navigation_config = updates.navigation_config;
 
-    return await this.saveToTable('form_templates', payload);
+    const { data, error } = await supabase.from('form_templates').update(payload).eq('id', id).select();
+    if (error) {
+      console.error(`Error updating form_template ${id}:`, error.message);
+      throw error;
+    }
+    if (!data || data.length === 0) throw new Error(`Update failed for form_template: ${id}`);
+    return data[0];
   }
 
   async saveFormFields(templateId: string, fields: FormField[], deletedIds: string[]) {
@@ -1067,6 +1195,61 @@ class DBService {
    * Triggers automation bots for a specific table and record.
    * This replicates the logic found in TriggersPage.tsx but for automatic execution.
    */
+  private flattenData(parentData: any): Record<string, string> {
+    const combinedData: Record<string, string> = {};
+    
+    // Helper to format values and clean keys
+    const formatValue = (val: any) => (val === null || val === undefined) ? "" : String(val);
+    const cleanKey = (k: string) => k.replace(/[\[\]<>]/g, '');
+
+    // 1. Flatten Parent Data
+    Object.entries(parentData).forEach(([key, value]) => {
+      if (key === 'temp_child_data' || key.startsWith('_')) return;
+      combinedData[cleanKey(key)] = formatValue(value);
+    });
+
+    // 2. Process Child & Grandchild Data from temp_child_data
+    if (parentData.temp_child_data) {
+      const childDataObj = typeof parentData.temp_child_data === 'string' 
+        ? JSON.parse(parentData.temp_child_data) 
+        : parentData.temp_child_data;
+        
+      Object.entries(childDataObj).forEach(([tableName, tableConfig]: [string, any]) => {
+        if (tableConfig.records && Array.isArray(tableConfig.records)) {
+          tableConfig.records.forEach((childRecord: any, index: number) => {
+            const displayIndex = index + 1;
+            
+            // Flatten Child Record
+            Object.entries(childRecord).forEach(([cKey, cValue]) => {
+              if (cKey === 'temp_child_data' || cKey.startsWith('_')) return;
+              combinedData[`${cleanKey(cKey)}_${displayIndex}`] = formatValue(cValue);
+            });
+
+            // Flatten Nested Grandchild Data (if any)
+            if (childRecord.temp_child_data) {
+              const grandchildDataObj = typeof childRecord.temp_child_data === 'string'
+                ? JSON.parse(childRecord.temp_child_data)
+                : childRecord.temp_child_data;
+
+              Object.entries(grandchildDataObj).forEach(([gTableName, gTableConfig]: [string, any]) => {
+                if (gTableConfig.records && Array.isArray(gTableConfig.records)) {
+                  gTableConfig.records.forEach((grandchildRecord: any) => {
+                    Object.entries(grandchildRecord).forEach(([gKey, gValue]) => {
+                      if (gKey === 'temp_child_data' || gKey.startsWith('_')) return;
+                      combinedData[`${cleanKey(gKey)}_${displayIndex}`] = formatValue(gValue);
+                    });
+                  });
+                }
+              });
+            }
+          });
+        }
+      });
+    }
+
+    return combinedData;
+  }
+
   async triggerBots(tableName: string, recordId: string, eventType: 'ADDS' | 'UPDATES' | 'DELETES' = 'ADDS') {
     console.log(`[Automation] Checking for bots on table: ${tableName}, Event: ${eventType}, Record: ${recordId}`);
     
@@ -1120,10 +1303,6 @@ class DBService {
         finalRowData = rowData;
       }
 
-      // Use the actual ROWID from the fetched record for child lookups
-      // This is critical because children are linked via the Friendly ID (ROWID)
-      const effectiveRowId = finalRowData.ROWID || recordId;
-
       const GAS_WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbx9Aprjm7RISvTet4j6xip62QlaUPeEnAy5cWDj6JKexwmifRyqDQ0PjuDP0Y3cB9Cg/exec';
 
       // 4. Execute each bot
@@ -1131,37 +1310,49 @@ class DBService {
         console.log(`[Automation] Executing bot: ${bot.name}`);
         
         const steps = bot.action_config?.steps || [];
-        const linkedChildTables = bot.action_config?.linked_child_tables || [];
-
-        // Fetch child data if needed
-        const childData: Record<string, any[]> = {};
-        for (const childTable of linkedChildTables) {
-          const { data: children } = await supabaseAdmin
-            .from(childTable)
-            .select('*')
-            .eq('ROWID', effectiveRowId);
-          childData[childTable] = children || [];
-        }
 
         for (const step of steps) {
           if (step.type === 'RUN_TASK' && step.task?.type === 'EMAIL') {
-            const payload = {
-              task: step.task,
-              rowData: finalRowData,
-              childData: childData
+            // 1:1 Dynamic Flattening Protocol (Strict)
+            const combinedData = this.flattenData(finalRowData);
+
+            // Helper to replace placeholders in strings using RESOLVED values
+            const replacePlaceholders = (str: string | undefined) => {
+              if (!str) return str;
+              let result = str;
+              Object.entries(combinedData).forEach(([key, value]) => {
+                // Strict Format: <<key>>
+                const regex = new RegExp(`<<${key}>>`, 'g');
+                result = result.replace(regex, value);
+              });
+              return result;
             };
 
-            console.log(`[Automation] Dispatching email task for bot ${bot.name} to GAS...`);
+            // Create a processed task with replaced placeholders
+            const processedTask = {
+              ...step.task,
+              to: replacePlaceholders(step.task.to),
+              subject: replacePlaceholders(step.task.subject),
+              body: replacePlaceholders(step.task.body)
+            };
+
+            const payload = {
+              templateId: step.task?.googleDocTemplateId || step.task?.templateId || bot.action_config?.templateId || bot.templateId,
+              task: processedTask,
+              combinedData: combinedData,
+              // Keep legacy fields for backward compatibility
+              rowData: finalRowData,
+              childData: finalRowData.temp_child_data || {}
+            };
+
+            console.log(`[Automation] Dispatching flattened payload for bot ${bot.name} to GAS...`);
             
-            // We use no-cors and remove 'await' to make the UI instant.
-            // The script will run in the background on Google's servers.
             fetch(GAS_WEB_APP_URL, {
               method: 'POST',
               headers: { 'Content-Type': 'text/plain' },
               body: JSON.stringify(payload)
             }).catch(err => {
               console.error(`[Automation] Fetch error:`, err);
-              alert('הנתונים נשמרו ב-Supabase אך האוטומציה נכשלה עקב חסימת דפדפן');
             });
             
             console.log(`[Automation] Bot ${bot.name} task dispatched.`);

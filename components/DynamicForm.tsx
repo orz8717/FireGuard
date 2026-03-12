@@ -1,6 +1,7 @@
 import React from 'react';
 import { FormTemplate, FieldType, FormField, User } from '../types';
 import { supabase, supabaseAdmin } from '../services/supabaseClient';
+import { useFormulaEngine } from '../hooks/useFormulaEngine';
 import { useDraftManager } from '../hooks/useDraftManager';
 import { 
   Calculator, 
@@ -38,6 +39,8 @@ interface DynamicFormProps {
   currentUser?: User | null;
   draftId: string; 
   editingInspectionId?: string | null;
+  isPreview?: boolean;
+  pendingChildRecords?: Record<string, any[]>;
 }
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -366,7 +369,9 @@ const DynamicForm: React.FC<DynamicFormProps> = ({
   contextData = {},
   currentUser = null,
   draftId,
-  editingInspectionId = null
+  editingInspectionId = null,
+  isPreview = false,
+  pendingChildRecords = {}
 }) => {
   // Use a ref for dependencies to avoid excessive updates in formula engine
   const fieldsRef = React.useRef(template.fields);
@@ -406,8 +411,9 @@ const DynamicForm: React.FC<DynamicFormProps> = ({
     saveDraft,
     deleteDraft,
     updateCurrentData,
-    setHasDraft
-  } = useDraftManager(currentUser?.id || '', template.id);
+    setHasDraft,
+    setIsCancelling
+  } = useDraftManager(currentUser?.id || '', template.id, isPreview);
 
   const [showDraftPrompt, setShowDraftPrompt] = React.useState(false);
 
@@ -423,9 +429,10 @@ const DynamicForm: React.FC<DynamicFormProps> = ({
       ...formData,
       templateName: template.name,
       customerName: customer?.name || 'לקוח טרם נבחר',
-      editingInspectionId: editingInspectionId
+      editingInspectionId: editingInspectionId,
+      pendingChildRecords: pendingChildRecords
     });
-  }, [formData, updateCurrentData, template.name, contextData, editingInspectionId]);
+  }, [formData, updateCurrentData, template.name, contextData, editingInspectionId, pendingChildRecords]);
 
   React.useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -674,307 +681,10 @@ const DynamicForm: React.FC<DynamicFormProps> = ({
     });
     
     isMountedRef.current = true;
-
   }, [formData, contextData, readOnly, parentRecord]);
 
   // --- FORMULA ENGINE ---
-
-  const formulaFunctions = React.useMemo(() => {
-    const funcs: any = {
-      // Logical
-      AND: (...args: any[]) => args.every(Boolean),
-      OR: (...args: any[]) => args.some(Boolean),
-      NOT: (val: any) => !val,
-      IF: (cond: any, t: any, f: any) => (!!cond ? t : f),
-      IFS: (...args: any[]) => {
-        for (let i = 0; i < args.length; i += 2) {
-          if (args[i]) return args[i+1];
-        }
-        return null;
-      },
-      SWITCH: (val: any, ...args: any[]) => {
-        for (let i = 0; i < args.length - 1; i += 2) {
-          if (val === args[i]) return args[i+1];
-        }
-        return args.length % 2 !== 0 ? args[args.length - 1] : null;
-      },
-      ISBLANK: (val: any) => val === undefined || val === null || String(val).trim() === '' || (Array.isArray(val) && val.length === 0),
-      ISNOTBLANK: (val: any) => !(val === undefined || val === null || String(val).trim() === '' || (Array.isArray(val) && val.length === 0)),
-      TRUE: true,
-      FALSE: false,
-      
-      // Math (Strict Type-Safe)
-      ABS: (n: any) => Math.abs(Number(n) || 0),
-      CEILING: (n: any) => Math.ceil(Number(n) || 0),
-      FLOOR: (n: any) => Math.floor(Number(n) || 0),
-      ROUND: (n: any) => Math.round(Number(n) || 0),
-      MOD: (a: any, b: any) => (Number(a) || 0) % (Number(b) || 1),
-      POWER: (a: any, b: any) => Math.pow(Number(a) || 0, Number(b) || 0),
-      SQRT: (n: any) => Math.sqrt(Number(n) || 0),
-      LOG: (n: any) => Math.log10(Number(n) || 0),
-      LN: (n: any) => Math.log(Number(n) || 0),
-      EXP: (n: any) => Math.exp(Number(n) || 0),
-      MAX: (...args: any[]) => {
-        const nums = args.flat().map(n => Number(n)).filter(n => !isNaN(n));
-        return nums.length ? Math.max(...nums) : 0;
-      },
-      MIN: (...args: any[]) => {
-        const nums = args.flat().map(n => Number(n)).filter(n => !isNaN(n));
-        return nums.length ? Math.min(...nums) : 0;
-      },
-      AVERAGE: (...args: any[]) => {
-        const nums = args.flat().map(n => Number(n)).filter(n => !isNaN(n));
-        return nums.length ? nums.reduce((a, b) => a + b, 0) / nums.length : 0;
-      },
-      COUNT: (...args: any[]) => args.flat().length,
-      SUM: (...args: any[]) => args.flat().reduce((acc, val) => acc + (Number(val) || 0), 0),
-      RANDBETWEEN: (min: any, max: any) => {
-        const mn = Math.ceil(Number(min) || 0);
-        const mx = Math.floor(Number(max) || 0);
-        return Math.floor(Math.random() * (mx - mn + 1)) + mn;
-      },
-      
-      // Text (Safe Null Handling)
-      CONCATENATE: (...args: any[]) => args.map(a => a === null || a === undefined ? '' : String(a)).join(''),
-      EXACT: (a: any, b: any) => String(a || '') === String(b || ''),
-      FIND: (find: any, within: any) => (String(within || '')).indexOf(String(find || '')) + 1,
-      LEFT: (text: any, num: any) => (String(text || '')).substring(0, Number(num) || 0),
-      LEN: (text: any) => (String(text || '')).length,
-      LOWER: (text: any) => (String(text || '')).toLowerCase(),
-      MID: (text: any, start: any, num: any) => (String(text || '')).substring((Number(start) || 1) - 1, ((Number(start) || 1) - 1) + (Number(num) || 0)),
-      RIGHT: (text: any, num: any) => (String(text || '')).slice(-(Number(num) || 0)),
-      SUBSTITUTE: (text: any, oldT: any, newT: any) => (String(text || '')).split(String(oldT || '')).join(String(newT || '')),
-      TRIM: (text: any) => (String(text || '')).trim(),
-      UPPER: (text: any) => (String(text || '')).toUpperCase(),
-      CONTAINS: (text: any, search: any) => {
-        const str = String(text || '');
-        return str ? str.includes(String(search || '')) : false;
-      },
-      INITIALS: (text: any) => (String(text || '')).trim().split(/\s+/).filter(Boolean).map((w: string) => w[0]).join('').toUpperCase(),
-      
-      // Date & Time
-      TODAY: () => new Date().toISOString().split('T')[0],
-      NOW: () => new Date().toISOString(),
-      TIMENOW: () => new Date().toLocaleTimeString(),
-      DAY: (date: any) => date ? new Date(date).getDate() : null,
-      MONTH: (date: any) => date ? new Date(date).getMonth() + 1 : null,
-      YEAR: (date: any) => date ? new Date(date).getFullYear() : null,
-      HOUR: (time: any) => time ? new Date(`1970-01-01T${time}`).getHours() : null,
-      MINUTE: (time: any) => time ? new Date(`1970-01-01T${time}`).getMinutes() : null,
-      SECOND: (time: any) => time ? new Date(`1970-01-01T${time}`).getSeconds() : null,
-      
-      // System
-      UNIQUEID: () => Math.random().toString(36).substring(2, 11).toUpperCase(),
-      USEREMAIL: () => currentUser?.email || '',
-      USERNAME: () => currentUser?.name || '',
-      USERROLE: () => currentUser?.role || '',
-      
-      // Deep Links
-      LINKTOFORM: (formId: string, ...args: any[]) => {
-        const payload: any = { targetFormId: formId, initialValues: {} };
-        for (let i = 0; i < args.length; i += 2) {
-          payload.initialValues[args[i]] = args[i+1];
-        }
-        return `__LINKTOFORM__${JSON.stringify(payload)}`;
-      },
-      LINKTOROW: (rowId: string, formId: string) => {
-        return `__LINKTOROW__${JSON.stringify({ rowId, targetFormId: formId })}`;
-      },
-      LINKTOVIEW: (viewName: string) => {
-        return `__LINKTOVIEW__${JSON.stringify({ viewName })}`;
-      },
-      
-      // List & Ref
-      ANY: (list: any[]) => Array.isArray(list) ? list[0] : list,
-      IN: (val: any, list: any[]) => Array.isArray(list) ? list.includes(val) : false,
-      UNIQUE: (list: any[]) => Array.from(new Set(list)),
-      SORT: (list: any[]) => [...list].sort(),
-      
-      // Data Access (Full Async LOOKUP)
-      LOOKUP: async (val: any, tableName: string, col: string, returnCol: string) => {
-        if (val === null || val === undefined || val === '') return null;
-        
-        const searchVal = String(val).trim();
-        const tNameStr = String(tableName || '').trim();
-        const colStr = String(col || '').trim();
-        const returnColStr = String(returnCol || '').trim();
-
-        if (!tNameStr || !colStr || !returnColStr) return null;
-        
-        // 1. Check contextData first (Synchronous/Cache)
-        const tNameLower = tNameStr.toLowerCase();
-        let tableData = [];
-        
-        if (tNameLower === 'customers' || tNameLower === 'customer') {
-          tableData = contextData['Customers'] || [];
-        } else if (tNameLower === 'users' || tNameLower === 'user') {
-          tableData = contextData['Users'] || [];
-        } else {
-          tableData = contextData[tNameStr] || 
-                      Object.values(contextData).find((t: any, idx) => 
-                        Object.keys(contextData)[idx].toLowerCase() === tNameLower
-                      ) || [];
-        }
-
-        if (Array.isArray(tableData) && tableData.length > 0) {
-          const row = tableData.find((r: any) => String(r[colStr] || '').trim() === searchVal);
-          if (row) return row[returnColStr] !== undefined ? (row[returnColStr] === null ? "" : row[returnColStr]) : null;
-        }
-
-        // 2. Fallback to Supabase (Asynchronous)
-        try {
-          const { data, error } = await supabase
-            .from(tNameStr)
-            .select(returnColStr)
-            .eq(colStr, searchVal)
-            .maybeSingle();
-          
-          if (error) throw error;
-          return data ? data[returnColStr] : null;
-        } catch (e) {
-          console.error(`LOOKUP failed for ${tNameStr}:`, e);
-          return null;
-        }
-      },
-      __SELECT: async (tableName: string, returnCol: string, conditionStr: string) => {
-        const tableData = contextData[tableName] || contextData['Customers'] || [];
-        const parsedCondition = conditionStr.replace(/\[([^\]]+)\]/g, `row["$1"]`).replace(/([^<>=!])=([^=])/g, '$1===$2');
-        const condFunc = new Function('row', `try { return ${parsedCondition}; } catch(e) { return false; }`);
-        return tableData.filter((r: any) => condFunc(r)).map((r: any) => r[returnCol]);
-      },
-      __FILTER: async (tableName: string, conditionStr: string) => {
-        const tableData = contextData[tableName] || contextData['Customers'] || [];
-        const parsedCondition = conditionStr.replace(/\[([^\]]+)\]/g, `row["$1"]`).replace(/([^<>=!])=([^=])/g, '$1===$2');
-        const condFunc = new Function('row', `try { return ${parsedCondition}; } catch(e) { return false; }`);
-        return tableData.filter((r: any) => condFunc(r)).map((r: any) => r.id);
-      },
-      __GET_COLUMN_LIST: (tableName: string, col: string) => {
-        const tableData = contextData[tableName] || [];
-        return tableData.map((r: any) => r[col]);
-      },
-      __GET_RELATED_VALUE: (tableName: string, col: string, currentData: Record<string, any>) => {
-        const tNameLower = tableName.toLowerCase();
-        let tableData = [];
-        
-        if (tNameLower === 'customers' || tNameLower === 'customer') {
-          tableData = contextData['Customers'] || [];
-        } else if (tNameLower === 'users' || tNameLower === 'user') {
-          tableData = contextData['Users'] || [];
-        } else {
-          tableData = contextData[tableName] || 
-                      Object.values(contextData).find((t: any, idx) => 
-                        Object.keys(contextData)[idx].toLowerCase() === tNameLower
-                      ) || [];
-        }
-
-        if (!Array.isArray(tableData) || !tableData.length) return null;
-
-        let foreignKeyField = null;
-        if (tNameLower === 'customers' || tNameLower === 'customer') {
-          foreignKeyField = 'customerId';
-        } else if (tNameLower === 'users' || tNameLower === 'user') {
-          foreignKeyField = currentData['technicianId'] !== undefined ? 'technicianId' : 'userId';
-        } else {
-          const singularName = tNameLower.endsWith('s') ? tNameLower.slice(0, -1) : tNameLower;
-          foreignKeyField = `${singularName}Id`;
-        }
-
-        if (currentData[foreignKeyField] !== undefined) {
-          const foreignKeyValue = currentData[foreignKeyField];
-          if (foreignKeyValue === null || foreignKeyValue === undefined || foreignKeyValue === '') return "";
-
-          const row = tableData.find((r: any) => String(r.id) === String(foreignKeyValue));
-          if (row && row[col] !== undefined) return row[col] === null ? "" : row[col];
-          return "";
-        }
-
-        if (tableData.length > 0 && tableData[0][col] !== undefined) {
-           return tableData[0][col] === null ? "" : tableData[0][col];
-        }
-
-        return null;
-      },
-      __DEREF: async (refVal: any, returnCol: string) => {
-        if (!refVal) return null;
-        for (const table of Object.values(contextData)) {
-          if (Array.isArray(table)) {
-            const row = table.find((r: any) => String(r.id) === String(refVal));
-            if (row && row[returnCol] !== undefined) return row[returnCol];
-          }
-        }
-        return null;
-      },
-      __LIST_MATH: (list1: any, op: string, list2: any) => {
-        if (!Array.isArray(list1) && !Array.isArray(list2)) {
-          if (op === '+') return Number(list1 || 0) + Number(list2 || 0);
-          if (op === '-') return Number(list1 || 0) - Number(list2 || 0);
-        }
-        const l1 = Array.isArray(list1) ? list1 : [list1];
-        const l2 = Array.isArray(list2) ? list2 : [list2];
-        if (op === '+') return [...l1, ...l2];
-        if (op === '-') return l1.filter(x => !l2.includes(x));
-        return l1;
-      }
-    };
-    return funcs;
-  }, [contextData, currentUser, supabase]);
-
-  const evaluateFormula = React.useCallback(async (formula: string, data: Record<string, any>) => {
-    try {
-      if (!formula || formula.trim() === '') return null;
-      
-      let script = formula;
-      
-      // 1. Syntactic Sugar Replacements (AppSheet style)
-      script = script.replace(/SELECT\s*\(\s*([a-zA-Z0-9_]+)\[([^\]]+)\]\s*,\s*(.+?)\s*\)/ig, `__SELECT("$1", "$2", "$3")`);
-      script = script.replace(/FILTER\s*\(\s*"?([a-zA-Z0-9_]+)"?\s*,\s*(.+?)\s*\)/ig, `__FILTER("$1", "$2")`);
-      script = script.replace(/\[([^\]]+)\]\.\[([^\]]+)\]/g, `__DEREF(data["$1"], "$2")`);
-      script = script.replace(/([a-zA-Z0-9_]+)\[([^\]]+)\]/g, `__GET_RELATED_VALUE("$1", "$2", data)`);
-      
-      // List Math: List1 + List2 or List1 - List2
-      script = script.replace(/([a-zA-Z0-9_]+\[[^\]]+\]|\[[^\]]+\])\s*([+-])\s*([a-zA-Z0-9_]+\[[^\]]+\]|\[[^\]]+\])/g, (match, p1, p2, p3) => {
-        const parseArg = (arg: string) => {
-          if (arg && arg.includes('[')) {
-            const m = arg.match(/([a-zA-Z0-9_]+)?\[([^\]]+)\]/);
-            if (m) {
-              if (m[1]) return `__GET_RELATED_VALUE("${m[1]}", "${m[2]}", data)`;
-              return `data["${m[2]}"]`;
-            }
-          }
-          return arg;
-        };
-        return `__LIST_MATH(${parseArg(p1)}, "${p2}", ${parseArg(p3)})`;
-      });
-
-      script = script.replace(/\[([^\]]+)\]/g, `data["$1"]`);
-      script = script.replace(/([^<>=!])=([^=])/g, '$1===$2');
-
-      // 2. Async Injection: Wrap known async functions with await to support nested async calls
-      const asyncFuncs = ['LOOKUP', '__SELECT', '__FILTER', '__DEREF'];
-      asyncFuncs.forEach(fn => {
-        const regex = new RegExp(`\\b${fn}\\s*\\(`, 'g');
-        script = script.replace(regex, `await ${fn}(`);
-      });
-
-      // 3. Execution Scope: Inject all library functions into the local scope
-      const keys = Object.keys(formulaFunctions);
-      const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
-      
-      const evaluator = new AsyncFunction(...keys, 'data', `
-        try { 
-          return await (${script}); 
-        } catch(e) { 
-          return null; 
-        }
-      `);
-      
-      const result = await evaluator(...Object.values(formulaFunctions), data);
-      return result === undefined ? null : result;
-    } catch (e) {
-      console.error("Formula Parser Error:", e.message, "Formula:", formula);
-      return null;
-    }
-  }, [formulaFunctions]);
+  const { evaluateFormula, formulaFunctions } = useFormulaEngine(contextData || {}, currentUser);
 
   const runCalculations = React.useCallback(async () => {
     const newData = { ...formDataRef.current };
@@ -1077,11 +787,26 @@ const DynamicForm: React.FC<DynamicFormProps> = ({
       await runCalculations();
     }, 300);
     return () => clearTimeout(timer);
-  }, [dataString, runCalculations]);
+  }, [dataString, runCalculations, template.fields]);
 
   const handleChange = (key: string, value: any) => {
     if (readOnly) return;
-    setFormData(prev => ({ ...prev, [key]: value }));
+    
+    let extraData = {};
+    if (key === 'customerId') {
+      const selectedCustomer = contextData?.['Customers']?.find((c: any) => c.id === value);
+      console.log("Selected Data:", selectedCustomer);
+      
+      if (selectedCustomer) {
+        // Normalize critical fields for AppSheet formulas
+        const customerNum = selectedCustomer.customer_number || selectedCustomer.customerNumber;
+        if (customerNum !== undefined) {
+          extraData = { 'מספר_לקוח': customerNum };
+        }
+      }
+    }
+
+    setFormData(prev => ({ ...prev, [key]: value, ...extraData }));
     if (errors[key]) {
       setErrors(prev => {
         const next = { ...prev };
@@ -1332,7 +1057,7 @@ const DynamicForm: React.FC<DynamicFormProps> = ({
           <h2 className="text-2xl font-black">{template.name}</h2>
           {template.description && <p className="text-blue-100 mt-1 text-sm font-bold opacity-80">{template.description}</p>}
         </div>
-        {!readOnly && (
+        {!readOnly && hasDraft && (
           <div className="relative z-10 bg-white/10 px-4 py-2 rounded-xl border border-white/20 backdrop-blur-md flex items-center gap-2">
             <div className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse shadow-lg shadow-emerald-400"/> 
             <span className="text-[10px] font-black uppercase tracking-widest">טיוטה פעילה</span>
@@ -1421,25 +1146,15 @@ const DynamicForm: React.FC<DynamicFormProps> = ({
                   }
                   
                   const customer = contextData?.['Customers']?.find((c: any) => c.id === formData.customerId);
-                  const draftData = {
+                  const dataToSave = {
                     ...formData,
                     templateName: template.name,
                     customerName: customer?.name || 'לקוח טרם נבחר',
-                    editingInspectionId: editingInspectionId
+                    editingInspectionId: editingInspectionId,
+                    pendingChildRecords: pendingChildRecords
                   };
 
-                  const { data: result, error } = await supabase.from('inspection_drafts').upsert({
-                    user_id: currentUser.id,
-                    table_name: template.id,
-                    data: draftData,
-                    last_updated: new Date().toISOString()
-                  }, { onConflict: 'user_id,table_name' }).select();
-
-                  if (error) throw error;
-                  if (!result || result.length === 0) {
-                    throw new Error(`Data sync failed for table: inspection_drafts`);
-                  }
-                  
+                  await saveDraft(dataToSave);
                   onCancel();
                 } catch (err) {
                   console.error('Error saving draft:', err);
@@ -1457,6 +1172,7 @@ const DynamicForm: React.FC<DynamicFormProps> = ({
           <button 
             type="button" 
             onClick={() => {
+              setIsCancelling(true);
               onCancel();
             }} 
             className="w-full sm:w-auto px-8 py-3 bg-white border border-slate-100 rounded-2xl text-slate-500 font-black transition-all hover:bg-slate-50 active:scale-95 min-h-[44px]"

@@ -68,6 +68,7 @@ export interface Inspection {
   inspectionDate: string;
   status: InspectionStatus;
   data: Record<string, any>; // JSON content of the dynamic form
+  tempChildData?: Record<string, any>; // Bundled child data for atomic saving
   createdAt: string;
   updatedAt: string;
 }

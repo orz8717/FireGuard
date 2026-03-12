@@ -1,4 +1,5 @@
 import React from 'react';
+import { useFormulaEngine } from '../hooks/useFormulaEngine';
 import { GoogleGenAI } from '@google/genai';
 import { FormTemplate, FormField, FieldType, Customer, User, UserRole } from '../types';
 import { dbService } from '../services/dbService';
@@ -822,33 +823,57 @@ const FormBuilder: React.FC = () => {
   const previewFields = React.useMemo(() => {
     const ef = editingField;
     const current = ef ? localFields.map(f => (f.id === ef.id ? ef : f)) : localFields;
-    const customerOptions = customers.map(c => ({ value: c.id, label: `${c.name} (${c.customerNumber})` }));
+    const customerOptions = customers.map(c => ({ value: c.id, label: `${c.name} (${c.customerNumber || c.customer_number})` }));
     return [{ id: 'sys_customer', fieldKey: 'customerId', label: 'בחר לקוח', fieldType: FieldType.SELECT, isRequired: true, orderIndex: -100, options: customerOptions } as any, ...current].sort((a,b) => (a.orderIndex || 0) - (b.orderIndex || 0));
   }, [localFields, editingField, customers]);
 
   const previewContext = React.useMemo(() => ({
     ...dynamicTableData,
-    Customers: customers.map(c => ({ ...JSON.parse(c.notes || '{}'), id: c.id, customerNumber: c.customerNumber, name: c.name, address: c.address, city: c.city })),
+    Customers: customers.map(c => ({ ...JSON.parse(c.notes || '{}'), id: c.id, customer_number: c.customer_number || c.customerNumber, name: c.name, address: c.address, city: c.city })),
     Users: users.map(u => ({ id: u.id, name: u.name, email: u.email, role: u.role }))
   }), [customers, users, dynamicTableData]);
 
-  const getWizardResult = (formula: string, sandboxValues: Record<string, any> = {}) => {
-    if (!formula.trim()) return { val: null, error: null };
-    try {
-      const mockData: any = { customerId: 'c1', ...sandboxValues };
-      localFields.forEach(f => { if (mockData[f.fieldKey] === undefined) mockData[f.fieldKey] = f.fieldType === FieldType.NUMBER ? 10 : "דוגמה"; });
-      let script = formula.replace(/([^\[\s(]+)?\[([^\]]+)\]/g, (match, tableName, fieldKey) => {
-        if (tableName) return `LOOKUP(data["customerId"], "${tableName}", "id", "${fieldKey}")`;
-        return `data["${fieldKey}"]`;
-      });
-      const evaluator = new Function('data', `try { const SUM = (...args) => args.flat().reduce((a, b) => Number(a||0) + Number(b||0), 0); const IF = (c, t, f) => (c ? t : f); const LOOKUP = (v, t, c, r) => "תוצאה סימולטיבית"; return ${script}; } catch(e) { return "שגיאה: " + e.message; }`);
-      const val = evaluator(mockData);
-      return { val, error: typeof val === 'string' && val.startsWith('שגיאה') ? val : null };
-    } catch (e: any) { return { val: null, error: e.message }; }
-  };
+  const { evaluateFormula } = useFormulaEngine(previewContext, authService.getCurrentUser());
 
-  const wizardResult = React.useMemo(() => wizardConfig ? getWizardResult(wizardConfig.currentFormula, wizardConfig.sandboxValues) : { val: null, error: null }, [wizardConfig?.currentFormula, wizardConfig?.sandboxValues]);
-  const detectedSandboxFields = React.useMemo(() => { if (!wizardConfig?.currentFormula) return []; const matches = Array.from(wizardConfig.currentFormula.matchAll(/([^\[\s(]+)?\[([^\]]+)\]/g)); const unique = new Set<string>(); matches.forEach(m => { if (!m[1]) unique.add(m[2]); }); return Array.from(unique).map(k => localFields.find(lf => lf.fieldKey === k) || { fieldKey: k, label: k, fieldType: FieldType.TEXT }); }, [wizardConfig?.currentFormula, localFields]);
+  const [wizardResult, setWizardResult] = React.useState<{ val: any; error: string | null }>({ val: null, error: null });
+  const [isEvaluating, setIsEvaluating] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!wizardConfig?.currentFormula) {
+      setWizardResult({ val: null, error: null });
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      setIsEvaluating(true);
+      try {
+        const mockData: any = { customerId: 'c1', ...wizardConfig.sandboxValues };
+        // Fill missing fields with defaults for simulation
+        localFields.forEach(f => { 
+          if (mockData[f.fieldKey] === undefined) {
+             mockData[f.fieldKey] = f.fieldType === FieldType.NUMBER ? 10 : "דוגמה"; 
+          }
+        });
+        
+        const res = await evaluateFormula(wizardConfig.currentFormula, mockData);
+        setWizardResult({ val: res, error: null });
+      } catch (e: any) {
+        setWizardResult({ val: null, error: e.message });
+      } finally {
+        setIsEvaluating(false);
+      }
+    }, 500);
+
+    return () => clearTimeout(timer);
+  }, [wizardConfig?.currentFormula, wizardConfig?.sandboxValues, evaluateFormula, localFields]);
+
+  const detectedSandboxFields = React.useMemo(() => { 
+    if (!wizardConfig?.currentFormula) return []; 
+    const matches = Array.from(wizardConfig.currentFormula.matchAll(/([^\[\s(]+)?\[([^\]]+)\]/g)); 
+    const unique = new Set<string>(); 
+    matches.forEach(m => { if (!m[1]) unique.add(m[2]); }); 
+    return Array.from(unique).map(k => localFields.find(lf => lf.fieldKey === k) || { fieldKey: k, label: k, fieldType: FieldType.TEXT } as any); 
+  }, [wizardConfig?.currentFormula, localFields]);
 
   return (
     <div className="flex flex-col md:flex-row h-[calc(100vh-80px)] md:h-[calc(100vh-120px)] gap-4 md:gap-6" dir="rtl">
@@ -1491,7 +1516,7 @@ const FormBuilder: React.FC = () => {
                   )}
                 </div>
               )}
-              {editTab === 'preview' && ( <div className="max-w-4xl mx-auto border-4 border-dashed border-slate-100 rounded-[40px] p-12 bg-slate-50 shadow-inner relative"> <DynamicForm template={{...selectedTemplate!, fields: previewFields}} onCancel={() => {}} onSubmit={() => {}} contextData={previewContext} currentUser={currentUser} draftId="preview_session" /> </div> )}
+              {editTab === 'preview' && ( <div className="max-w-4xl mx-auto border-4 border-dashed border-slate-100 rounded-[40px] p-12 bg-slate-50 shadow-inner relative"> <DynamicForm template={{...selectedTemplate!, fields: previewFields}} onCancel={() => {}} onSubmit={() => {}} contextData={previewContext} currentUser={currentUser} draftId="preview_session" isPreview={true} /> </div> )}
             </div>
             <div className="p-4 md:p-8 border-t flex flex-col sm:flex-row justify-end gap-3 md:gap-4 bg-slate-50"> 
               <button onClick={() => setEditingField(null)} className="w-full sm:w-auto px-8 py-3 bg-white border rounded-2xl font-black text-slate-500 min-h-[44px]">ביטול</button> 
