@@ -26,10 +26,13 @@ const PlaceholderPage = ({ title }: { title: string }) => (
   </div>
 );
 
-const App: React.FC = () => {
+import { SyncProvider, useSync } from './context/SyncContext';
+
+const AppContent: React.FC = () => {
   const [user, setUser] = React.useState<User | null>(authService.getCurrentUser());
   const [activeScreen, setActiveScreen] = React.useState('dashboard');
   const [showRegister, setShowRegister] = React.useState(false);
+  const { startSync } = useSync();
 
   // Listen for auth changes to update UI when session expires or refresh fails
   React.useEffect(() => {
@@ -43,7 +46,7 @@ const App: React.FC = () => {
     const handleOnline = () => {
       console.log('App is online, processing outbox and hydrating data...');
       dbService.processOutbox();
-      dbService.hydrateOfflineData();
+      startSync();
     };
 
     window.addEventListener('online', handleOnline);
@@ -51,7 +54,7 @@ const App: React.FC = () => {
     // Initial check
     if (navigator.onLine) {
       dbService.processOutbox();
-      dbService.hydrateOfflineData();
+      startSync();
     }
 
     // Storage Estimate Check
@@ -142,6 +145,14 @@ const App: React.FC = () => {
     >
       {renderContent()}
     </Layout>
+  );
+};
+
+const App: React.FC = () => {
+  return (
+    <SyncProvider>
+      <AppContent />
+    </SyncProvider>
   );
 };
 

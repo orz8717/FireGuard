@@ -1766,10 +1766,15 @@ class DBService {
     }));
   }
 
-  async hydrateOfflineData() {
+  async hydrateOfflineData(onProgress?: (progress: number) => void) {
     if (!navigator.onLine) return;
     
     console.log('[Offline Sync] Starting full schema hydration...');
+    const totalTables = OFFLINE_TABLES.length;
+    let completedTables = 0;
+
+    if (onProgress) onProgress(0);
+
     for (const tableName of OFFLINE_TABLES) {
       try {
         const data = await this.fetchFullTable(tableName, undefined, true, true);
@@ -1777,8 +1782,16 @@ class DBService {
           await offlineService.bulkPut(tableName, data);
           console.log(`[Offline Sync] Hydrated ${data.length} rows for ${tableName}`);
         }
+        completedTables++;
+        if (onProgress) {
+          onProgress(Math.round((completedTables / totalTables) * 100));
+        }
       } catch (err) {
         console.error(`[Offline Sync] Failed to hydrate ${tableName}:`, err);
+        completedTables++; // Count as completed even if failed to keep progress moving
+        if (onProgress) {
+          onProgress(Math.round((completedTables / totalTables) * 100));
+        }
       }
     }
     console.log('[Offline Sync] Hydration complete.');
