@@ -93,9 +93,41 @@ const Users: React.FC<UsersProps> = ({ onNavigateToSignup }) => {
       }
       
       setEditingUser(null);
+      setNewPassword('');
       await loadUsers();
     } catch (err) {
       alert('שגיאה בשמירת נתונים');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleUpdatePassword = async () => {
+    if (!editingUser || !newPassword) return;
+    if (newPassword.length < 6) {
+      alert('הסיסמא חייבת להיות לפחות 6 תווים');
+      return;
+    }
+    
+    setSaving(true);
+    try {
+      const { error } = await authService.updateUserPassword(editingUser.id, newPassword);
+      if (error) throw error;
+      
+      alert('הסיסמא עודכנה בהצלחה');
+      setNewPassword('');
+      
+      // Log activity
+      const currentUser = authService.getCurrentUser();
+      if (currentUser) {
+        await dbService.logActivity(
+          currentUser.name,
+          'UPDATE_PASSWORD',
+          `עודכנה סיסמא עבור המשתמש: ${editingUser.name}`
+        );
+      }
+    } catch (err: any) {
+      alert('שגיאה בעדכון הסיסמא: ' + (err.message || 'שגיאה לא ידועה'));
     } finally {
       setSaving(false);
     }
@@ -237,7 +269,10 @@ const Users: React.FC<UsersProps> = ({ onNavigateToSignup }) => {
                 <h2 className="text-xl font-bold text-slate-800">עריכת משתמש והרשאות: {editingUser.name}</h2>
                 <p className="text-sm text-slate-500">{editingUser.email}</p>
               </div>
-              <button onClick={() => setEditingUser(null)} className="p-2 hover:bg-slate-200 rounded-full transition-colors">
+              <button onClick={() => {
+                setEditingUser(null);
+                setNewPassword('');
+              }} className="p-2 hover:bg-slate-200 rounded-full transition-colors">
                 <X size={24} />
               </button>
             </div>
@@ -276,6 +311,28 @@ const Users: React.FC<UsersProps> = ({ onNavigateToSignup }) => {
                     />
                     משתמש פעיל במערכת
                   </label>
+                </div>
+
+                <div className="bg-orange-50 p-4 rounded-xl border border-orange-100">
+                  <label className="block text-sm font-bold text-gray-700 mb-2">החלפת סיסמא</label>
+                  <div className="flex gap-2">
+                    <input 
+                      type="password"
+                      placeholder="סיסמא חדשה..."
+                      value={newPassword}
+                      onChange={(e) => setNewPassword(e.target.value)}
+                      className="w-full p-2 border rounded-lg outline-none bg-white focus:ring-2 focus:ring-orange-500"
+                    />
+                    <button 
+                      onClick={handleUpdatePassword}
+                      disabled={!newPassword || saving}
+                      className="bg-orange-600 text-white p-2 rounded-lg hover:bg-orange-700 disabled:opacity-50 transition-colors"
+                      title="עדכן סיסמא"
+                    >
+                      <Lock size={18} />
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-orange-600 mt-1 font-medium">לפחות 6 תווים</p>
                 </div>
               </div>
 
@@ -319,7 +376,10 @@ const Users: React.FC<UsersProps> = ({ onNavigateToSignup }) => {
 
             <div className="p-4 md:p-6 border-t flex flex-col sm:flex-row justify-end gap-3 bg-slate-50">
               <button 
-                onClick={() => setEditingUser(null)}
+                onClick={() => {
+                  setEditingUser(null);
+                  setNewPassword('');
+                }}
                 className="w-full sm:w-auto px-6 py-3 sm:py-2 border border-gray-300 rounded-lg font-bold text-gray-600 hover:bg-white transition-colors min-h-[44px]"
               >
                 ביטול

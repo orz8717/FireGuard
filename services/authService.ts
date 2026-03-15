@@ -142,6 +142,18 @@ class AuthService {
   onAuthStateChange(callback: (event: string, session: any) => void) {
     return supabase.auth.onAuthStateChange(callback);
   }
+
+  async updateUserPassword(userId: string, newPassword: string): Promise<{ error: any }> {
+    try {
+      const { error } = await supabaseAdmin.auth.admin.updateUserById(userId, {
+        password: newPassword
+      });
+      return { error };
+    } catch (error: any) {
+      console.error('Error updating password:', error);
+      return { error };
+    }
+  }
 }
 
 export const authService = new AuthService();
