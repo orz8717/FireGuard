@@ -26,27 +26,23 @@ const PlaceholderPage = ({ title }: { title: string }) => (
   </div>
 );
 
-import { SyncProvider, useSync } from './context/SyncContext';
-
-const AppContent: React.FC = () => {
+const App: React.FC = () => {
   const [user, setUser] = React.useState<User | null>(authService.getCurrentUser());
   const [activeScreen, setActiveScreen] = React.useState('dashboard');
   const [showRegister, setShowRegister] = React.useState(false);
-  const { startSync } = useSync();
 
   // Listen for auth changes to update UI when session expires or refresh fails
   React.useEffect(() => {
     const { data: { subscription } } = authService.onAuthStateChange((event, session) => {
-      if (event === 'SIGNED_OUT' || (event === 'TOKEN_REFRESHED' && !session) || (event === 'INITIAL_SESSION' && !session)) {
+      if (event === 'SIGNED_OUT' || (event === 'TOKEN_REFRESHED' && !session)) {
         setUser(null);
       }
     });
 
     // Handle Online/Offline Sync
     const handleOnline = () => {
-      console.log('App is online, processing outbox and hydrating data...');
+      console.log('App is online, processing outbox...');
       dbService.processOutbox();
-      startSync();
     };
 
     window.addEventListener('online', handleOnline);
@@ -54,7 +50,6 @@ const AppContent: React.FC = () => {
     // Initial check
     if (navigator.onLine) {
       dbService.processOutbox();
-      startSync();
     }
 
     // Storage Estimate Check
@@ -145,14 +140,6 @@ const AppContent: React.FC = () => {
     >
       {renderContent()}
     </Layout>
-  );
-};
-
-const App: React.FC = () => {
-  return (
-    <SyncProvider>
-      <AppContent />
-    </SyncProvider>
   );
 };
 

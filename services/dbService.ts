@@ -1,6 +1,6 @@
 import { supabase, supabaseAdmin, supabaseAnon } from './supabaseClient';
 import { User, Customer, Inspection, Certificate, FormTemplate, Permission, UserRole, InspectionStatus, InspectionType, FormField, FieldType, AuditLog } from '../types';
-import { offlineService, OFFLINE_TABLES } from './offlineService';
+import { offlineService } from './offlineService';
 
 class DBService {
   public supabaseAdmin = supabaseAdmin;
@@ -128,26 +128,6 @@ class DBService {
       return results;
     } catch (err) {
       console.error('Schema check failed:', err);
-      throw err;
-    }
-  }
-
-  async fixTableAtomicSchema(tableName: string) {
-    try {
-      const { error } = await supabaseAdmin.rpc('fix_table_atomic_schema', { p_table_name: tableName });
-      if (error) throw error;
-    } catch (err: any) {
-      console.error(`Failed to fix parent schema for ${tableName}:`, err);
-      throw err;
-    }
-  }
-
-  async fixChildTableSchema(tableName: string) {
-    try {
-      const { error } = await supabaseAdmin.rpc('fix_child_table_schema', { p_table_name: tableName });
-      if (error) throw error;
-    } catch (err: any) {
-      console.error(`Failed to fix child schema for ${tableName}:`, err);
       throw err;
     }
   }
@@ -320,23 +300,11 @@ class DBService {
         delete supabasePayload.id;
       }
 
-      const STANDARD_TABLES = [
-        'inspections', 'customers', 'users', 'permissions', 'certificates', 
-        'form_templates', 'form_fields', 'audit_logs', 'automation_bots', 'import_logs', 'inspection_drafts'
-      ];
-      if (STANDARD_TABLES.includes(tableName)) {
-        delete supabasePayload.ROWID;
-      }
-
       const options: any = { onConflict: 'id' };
-      if (tableName === 'inspection_drafts') {
-        options.onConflict = 'user_id,table_name';
-      } else if (supabasePayload.id) {
-        options.onConflict = 'id';
+      if (supabasePayload.ROWID) {
+        options.onConflict = 'ROWID';
       } else if (supabasePayload.serial_number) {
         options.onConflict = 'serial_number';
-      } else if (supabasePayload.ROWID) {
-        options.onConflict = 'ROWID';
       }
 
       const { data, error } = await client
@@ -410,24 +378,9 @@ class DBService {
           delete supabasePayload.id;
         }
 
-        const STANDARD_TABLES = [
-          'inspections', 'customers', 'users', 'permissions', 'certificates', 
-          'form_templates', 'form_fields', 'audit_logs', 'automation_bots', 'import_logs', 'inspection_drafts'
-        ];
-        if (STANDARD_TABLES.includes(item.tableName)) {
-          delete supabasePayload.ROWID;
-        }
-
         const options: any = { onConflict: 'id' };
-        if (item.tableName === 'inspection_drafts') {
-          options.onConflict = 'user_id,table_name';
-        } else if (supabasePayload.id) {
-          options.onConflict = 'id';
-        } else if (supabasePayload.serial_number) {
-          options.onConflict = 'serial_number';
-        } else if (supabasePayload.ROWID) {
-          options.onConflict = 'ROWID';
-        }
+        if (supabasePayload.ROWID) options.onConflict = 'ROWID';
+        else if (supabasePayload.serial_number) options.onConflict = 'serial_number';
 
         const { data, error } = await supabaseAdmin
           .from(item.tableName)
@@ -1811,37 +1764,6 @@ class DBService {
       error_details: log.error_details,
       execution_time: log.execution_time
     }));
-  }
-
-  async hydrateOfflineData(onProgress?: (progress: number) => void) {
-    if (!navigator.onLine) return;
-    
-    console.log('[Offline Sync] Starting full schema hydration...');
-    const totalTables = OFFLINE_TABLES.length;
-    let completedTables = 0;
-
-    if (onProgress) onProgress(0);
-
-    for (const tableName of OFFLINE_TABLES) {
-      try {
-        const data = await this.fetchFullTable(tableName, undefined, true, true);
-        if (data && data.length > 0) {
-          await offlineService.bulkPut(tableName, data);
-          console.log(`[Offline Sync] Hydrated ${data.length} rows for ${tableName}`);
-        }
-        completedTables++;
-        if (onProgress) {
-          onProgress(Math.round((completedTables / totalTables) * 100));
-        }
-      } catch (err) {
-        console.error(`[Offline Sync] Failed to hydrate ${tableName}:`, err);
-        completedTables++; // Count as completed even if failed to keep progress moving
-        if (onProgress) {
-          onProgress(Math.round((completedTables / totalTables) * 100));
-        }
-      }
-    }
-    console.log('[Offline Sync] Hydration complete.');
   }
 }
 

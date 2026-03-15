@@ -8,23 +8,16 @@ class AuthService {
 
   constructor() {
     // Listen for auth changes to handle token expiration or refresh errors
-    supabase.auth.onAuthStateChange(async (event, session) => {
+    supabase.auth.onAuthStateChange((event, session) => {
       console.log('Auth state change:', event, !!session);
       
       if (event === 'SIGNED_OUT' || (event === 'TOKEN_REFRESHED' && !session)) {
         this.currentUser = null;
         localStorage.removeItem('fireguard_session');
+        // We might want to reload or notify the UI, but App.tsx handles state
       }
-
-      // Handle specific error cases that might not trigger SIGNED_OUT correctly
-      if (event === 'INITIAL_SESSION' && !session) {
-        const saved = localStorage.getItem('fireguard_session');
-        if (saved) {
-          console.warn('Session mismatch detected, clearing local storage');
-          localStorage.removeItem('fireguard_session');
-          this.currentUser = null;
-        }
-      }
+      
+      // If we get an error like "Invalid Refresh Token", Supabase usually emits SIGNED_OUT
     });
   }
 

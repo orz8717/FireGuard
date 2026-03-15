@@ -46,12 +46,11 @@ export const useDraftManager = (userId: string, tableName: string, isPreview: bo
             if (!error && onlineData) {
               data = onlineData;
               // Cache locally
-              await offlineService.put('inspection_drafts', {
+              await offlineService.saveRecord('inspection_drafts', {
                 user_id: userId,
                 table_name: tableName,
                 data: onlineData.data,
-                last_updated: onlineData.last_updated,
-                ROWID: `${userId}_${tableName}`
+                last_updated: onlineData.last_updated
               });
             }
           } catch (onlineErr) {
@@ -61,7 +60,7 @@ export const useDraftManager = (userId: string, tableName: string, isPreview: bo
 
         // Fallback to local if online failed or we are offline
         if (!data) {
-          const localDraft = await offlineService.getById<any>('inspection_drafts', `${userId}_${tableName}`);
+          const localDraft = await offlineService.getRecord('inspection_drafts', `${userId}_${tableName}`);
           if (localDraft) {
             data = localDraft;
           }
