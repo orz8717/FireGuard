@@ -1,6 +1,6 @@
 import { supabase, supabaseAdmin, supabaseAnon } from './supabaseClient';
 import { User, Customer, Inspection, Certificate, FormTemplate, Permission, UserRole, InspectionStatus, InspectionType, FormField, FieldType, AuditLog } from '../types';
-import { offlineService } from './offlineService';
+import { offlineService, OFFLINE_TABLES } from './offlineService';
 
 class DBService {
   public supabaseAdmin = supabaseAdmin;
@@ -1764,6 +1764,24 @@ class DBService {
       error_details: log.error_details,
       execution_time: log.execution_time
     }));
+  }
+
+  async hydrateOfflineData() {
+    if (!navigator.onLine) return;
+    
+    console.log('[Offline Sync] Starting full schema hydration...');
+    for (const tableName of OFFLINE_TABLES) {
+      try {
+        const data = await this.fetchFullTable(tableName, undefined, true, true);
+        if (data && data.length > 0) {
+          await offlineService.bulkPut(tableName, data);
+          console.log(`[Offline Sync] Hydrated ${data.length} rows for ${tableName}`);
+        }
+      } catch (err) {
+        console.error(`[Offline Sync] Failed to hydrate ${tableName}:`, err);
+      }
+    }
+    console.log('[Offline Sync] Hydration complete.');
   }
 }
 

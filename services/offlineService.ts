@@ -3,7 +3,7 @@ import { openDB, IDBPDatabase } from 'idb';
 import { Inspection, Customer, User, Certificate, FormTemplate, Permission } from '../types';
 
 const DB_NAME = 'fireguard_offline_db';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 export interface SyncOutboxItem {
   id?: number;
@@ -14,6 +14,36 @@ export interface SyncOutboxItem {
   rowId?: string;
 }
 
+export const OFFLINE_TABLES = [
+  'EXTIN1',
+  'Equipment',
+  'NOYES',
+  'NOYES1',
+  'NOYES2',
+  'Panel',
+  'Signiture',
+  'YESNO',
+  'audit_logs',
+  'automation_bots',
+  'certificates',
+  'customers',
+  'form_fields',
+  'form_templates',
+  'import_logs',
+  'inspection_drafts',
+  'inspections',
+  'permissions',
+  'users',
+  'ביקורת_שנתית',
+  'חצי_שנתי',
+  'טופס_4',
+  'טופס_5',
+  'טופס_6',
+  'כיבויים_חצי_שנתי',
+  'כיבויים_שנתי',
+  'כיבויים_שנתי_2'
+];
+
 class OfflineService {
   private db: Promise<IDBPDatabase>;
 
@@ -23,26 +53,17 @@ class OfflineService {
 
   private async initDB() {
     return openDB(DB_NAME, DB_VERSION, {
-      upgrade(db) {
+      upgrade(db, oldVersion, newVersion) {
         // Entity Stores
-        if (!db.objectStoreNames.contains('inspections')) {
-          db.createObjectStore('inspections', { keyPath: 'id' });
-        }
-        if (!db.objectStoreNames.contains('customers')) {
-          db.createObjectStore('customers', { keyPath: 'id' });
-        }
-        if (!db.objectStoreNames.contains('users')) {
-          db.createObjectStore('users', { keyPath: 'id' });
-        }
-        if (!db.objectStoreNames.contains('certificates')) {
-          db.createObjectStore('certificates', { keyPath: 'id' });
-        }
-        if (!db.objectStoreNames.contains('form_templates')) {
-          db.createObjectStore('form_templates', { keyPath: 'id' });
-        }
-        if (!db.objectStoreNames.contains('permissions')) {
-          db.createObjectStore('permissions', { keyPath: 'id' });
-        }
+        OFFLINE_TABLES.forEach(tableName => {
+          if (db.objectStoreNames.contains(tableName)) {
+            // If version changed and we want to ensure ROWID is the keyPath, 
+            // we might need to delete and recreate if the keyPath is different.
+            // But for simplicity and following instructions:
+            db.deleteObjectStore(tableName);
+          }
+          db.createObjectStore(tableName, { keyPath: 'ROWID' });
+        });
 
         // Sync Outbox
         if (!db.objectStoreNames.contains('sync_outbox')) {
@@ -66,7 +87,24 @@ class OfflineService {
 
   async put<T>(storeName: string, item: T) {
     const db = await this.db;
+    // Ensure ROWID exists if it's the keyPath
+    if (item && typeof item === 'object' && !('ROWID' in item)) {
+      (item as any).ROWID = (item as any).id || (item as any).serial_number || Math.random().toString(36).substr(2, 9);
+    }
     return db.put(storeName, item);
+  }
+
+  async bulkPut<T>(storeName: string, items: T[]) {
+    const db = await this.db;
+    const tx = db.transaction(storeName, 'readwrite');
+    const store = tx.objectStore(storeName);
+    for (const item of items) {
+      if (item && typeof item === 'object' && !('ROWID' in item)) {
+        (item as any).ROWID = (item as any).id || (item as any).serial_number || Math.random().toString(36).substr(2, 9);
+      }
+      store.put(item);
+    }
+    return tx.done;
   }
 
   async delete(storeName: string, id: string) {

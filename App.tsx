@@ -41,8 +41,9 @@ const App: React.FC = () => {
 
     // Handle Online/Offline Sync
     const handleOnline = () => {
-      console.log('App is online, processing outbox...');
+      console.log('App is online, processing outbox and hydrating data...');
       dbService.processOutbox();
+      dbService.hydrateOfflineData();
     };
 
     window.addEventListener('online', handleOnline);
@@ -50,6 +51,7 @@ const App: React.FC = () => {
     // Initial check
     if (navigator.onLine) {
       dbService.processOutbox();
+      dbService.hydrateOfflineData();
     }
 
     // Storage Estimate Check
