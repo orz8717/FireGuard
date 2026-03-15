@@ -82,7 +82,10 @@ const Certificates: React.FC<CertificatesProps> = ({ user }) => {
             }));
 
             // Sync local cache with online drafts
-            await Promise.all(data.map(d => offlineService.saveRecord('inspection_drafts', d)));
+            await Promise.all(data.map(d => offlineService.put('inspection_drafts', {
+              ...d,
+              ROWID: d.id || `${user.id}_${d.table_name}`
+            })));
           }
         } catch (onlineErr) {
           console.warn('Failed to fetch online drafts:', onlineErr);
@@ -90,7 +93,7 @@ const Certificates: React.FC<CertificatesProps> = ({ user }) => {
       }
 
       // Merge with local drafts
-      const localDrafts = await offlineService.getRecords('inspection_drafts');
+      const localDrafts = await offlineService.getAll<any>('inspection_drafts');
       const userLocalDrafts = localDrafts
         .filter(d => d.user_id === user.id)
         .map(d => ({

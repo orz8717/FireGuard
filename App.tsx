@@ -37,7 +37,7 @@ const AppContent: React.FC = () => {
   // Listen for auth changes to update UI when session expires or refresh fails
   React.useEffect(() => {
     const { data: { subscription } } = authService.onAuthStateChange((event, session) => {
-      if (event === 'SIGNED_OUT' || (event === 'TOKEN_REFRESHED' && !session)) {
+      if (event === 'SIGNED_OUT' || (event === 'TOKEN_REFRESHED' && !session) || (event === 'INITIAL_SESSION' && !session)) {
         setUser(null);
       }
     });

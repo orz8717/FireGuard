@@ -132,6 +132,26 @@ class DBService {
     }
   }
 
+  async fixTableAtomicSchema(tableName: string) {
+    try {
+      const { error } = await supabaseAdmin.rpc('fix_table_atomic_schema', { p_table_name: tableName });
+      if (error) throw error;
+    } catch (err: any) {
+      console.error(`Failed to fix parent schema for ${tableName}:`, err);
+      throw err;
+    }
+  }
+
+  async fixChildTableSchema(tableName: string) {
+    try {
+      const { error } = await supabaseAdmin.rpc('fix_child_table_schema', { p_table_name: tableName });
+      if (error) throw error;
+    } catch (err: any) {
+      console.error(`Failed to fix child schema for ${tableName}:`, err);
+      throw err;
+    }
+  }
+
   async testWebhook() {
     const webhookUrl = process.env.VITE_APPS_SCRIPT_URL || 'https://script.google.com/macros/s/AKfycbx.../exec';
     try {
@@ -300,11 +320,23 @@ class DBService {
         delete supabasePayload.id;
       }
 
+      const STANDARD_TABLES = [
+        'inspections', 'customers', 'users', 'permissions', 'certificates', 
+        'form_templates', 'form_fields', 'audit_logs', 'automation_bots', 'import_logs', 'inspection_drafts'
+      ];
+      if (STANDARD_TABLES.includes(tableName)) {
+        delete supabasePayload.ROWID;
+      }
+
       const options: any = { onConflict: 'id' };
-      if (supabasePayload.ROWID) {
-        options.onConflict = 'ROWID';
+      if (tableName === 'inspection_drafts') {
+        options.onConflict = 'user_id,table_name';
+      } else if (supabasePayload.id) {
+        options.onConflict = 'id';
       } else if (supabasePayload.serial_number) {
         options.onConflict = 'serial_number';
+      } else if (supabasePayload.ROWID) {
+        options.onConflict = 'ROWID';
       }
 
       const { data, error } = await client
@@ -378,9 +410,24 @@ class DBService {
           delete supabasePayload.id;
         }
 
+        const STANDARD_TABLES = [
+          'inspections', 'customers', 'users', 'permissions', 'certificates', 
+          'form_templates', 'form_fields', 'audit_logs', 'automation_bots', 'import_logs', 'inspection_drafts'
+        ];
+        if (STANDARD_TABLES.includes(item.tableName)) {
+          delete supabasePayload.ROWID;
+        }
+
         const options: any = { onConflict: 'id' };
-        if (supabasePayload.ROWID) options.onConflict = 'ROWID';
-        else if (supabasePayload.serial_number) options.onConflict = 'serial_number';
+        if (item.tableName === 'inspection_drafts') {
+          options.onConflict = 'user_id,table_name';
+        } else if (supabasePayload.id) {
+          options.onConflict = 'id';
+        } else if (supabasePayload.serial_number) {
+          options.onConflict = 'serial_number';
+        } else if (supabasePayload.ROWID) {
+          options.onConflict = 'ROWID';
+        }
 
         const { data, error } = await supabaseAdmin
           .from(item.tableName)

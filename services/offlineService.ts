@@ -3,7 +3,7 @@ import { openDB, IDBPDatabase } from 'idb';
 import { Inspection, Customer, User, Certificate, FormTemplate, Permission } from '../types';
 
 const DB_NAME = 'fireguard_offline_db';
-const DB_VERSION = 3;
+const DB_VERSION = 5;
 
 export interface SyncOutboxItem {
   id?: number;
