@@ -13,7 +13,6 @@ export interface User {
   role: UserRole;
   isActive: boolean;
   password?: string;
-  last_modified_client?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -42,7 +41,6 @@ export interface Customer {
   contactPhone: string;
   contactEmail: string;
   notes?: string;
-  last_modified_client?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -71,7 +69,6 @@ export interface Inspection {
   status: InspectionStatus;
   data: Record<string, any>; // JSON content of the dynamic form
   tempChildData?: Record<string, any>; // Bundled child data for atomic saving
-  last_modified_client?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -97,7 +94,6 @@ export interface Certificate {
   issueDate: string;
   status: CertificateStatus;
   notes?: string;
-  last_modified_client?: string;
   createdAt: string;
   updatedAt: string;
 }

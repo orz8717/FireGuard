@@ -2,7 +2,6 @@
 import React from 'react';
 import { Inspection, InspectionType, InspectionStatus, Customer, User, UserRole, FormTemplate, FieldType } from '../types';
 import { dbService } from '../services/dbService';
-import { offlineService } from '../services/offlineService';
 import { supabase } from '../services/supabaseClient';
 import { Plus, Search, Eye, Edit2, Loader2, ClipboardList, Clock, Trash2, Zap, Building, CreditCard, Fingerprint, FileCheck } from 'lucide-react';
 import DynamicForm from '../components/DynamicForm';
@@ -60,62 +59,28 @@ const Certificates: React.FC<CertificatesProps> = ({ user }) => {
 
   const loadDrafts = async () => {
     try {
+      const { data, error } = await supabase
+        .from('inspection_drafts')
+        .select('*')
+        .eq('user_id', user.id);
+        
       let supabaseDrafts: any[] = [];
-      
-      if (navigator.onLine) {
-        try {
-          const { data, error } = await supabase
-            .from('inspection_drafts')
-            .select('*')
-            .eq('user_id', user.id);
-            
-          if (!error && data) {
-            supabaseDrafts = data.map(d => ({
-              id: d.id,
-              templateId: d.table_name,
-              templateName: d.data?.templateName || 'טיוטה',
-              customerName: d.data?.customerName || 'לקוח לא ידוע',
-              data: d.data,
-              updatedAt: d.last_updated || d.updated_at || new Date().toISOString(),
-              editingInspectionId: d.data?.editingInspectionId || null,
-              isSupabase: true
-            }));
-
-            // Sync local cache with online drafts
-            await Promise.all(data.map(d => offlineService.saveRecord('inspection_drafts', d)));
-          }
-        } catch (onlineErr) {
-          console.warn('Failed to fetch online drafts:', onlineErr);
-        }
-      }
-
-      // Merge with local drafts
-      const localDrafts = await offlineService.getRecords('inspection_drafts');
-      const userLocalDrafts = localDrafts
-        .filter(d => d.user_id === user.id)
-        .map(d => ({
-          id: d.id || d.ROWID,
+      if (!error && data) {
+        supabaseDrafts = data.map(d => ({
+          id: d.id,
           templateId: d.table_name,
-          templateName: d.data?.templateName || 'טיוטה (מקומי)',
+          templateName: d.data?.templateName || 'טיוטה',
           customerName: d.data?.customerName || 'לקוח לא ידוע',
           data: d.data,
           updatedAt: d.last_updated || d.updated_at || new Date().toISOString(),
           editingInspectionId: d.data?.editingInspectionId || null,
-          isSupabase: !!d.id
+          isSupabase: true
         }));
+      }
 
-      // Combine and deduplicate
-      const combinedMap = new Map();
-      userLocalDrafts.forEach(d => combinedMap.set(d.templateId, d));
-      supabaseDrafts.forEach(d => {
-        const existing = combinedMap.get(d.templateId);
-        if (!existing || new Date(d.updatedAt) > new Date(existing.updatedAt)) {
-          combinedMap.set(d.templateId, d);
-        }
-      });
-
-      const allDrafts = Array.from(combinedMap.values())
-        .filter((d: any) => d.templateName?.includes('אישור') || d.templateId?.includes('CERT'))
+      // Only use Supabase drafts to prevent duplicates
+      const allDrafts = supabaseDrafts
+        .filter((d: any) => d.templateName?.startsWith('אישור'))
         .sort((a: any, b: any) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
         
       setDrafts(allDrafts);

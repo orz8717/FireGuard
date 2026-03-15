@@ -6,8 +6,6 @@ import Login from './pages/Login';
 import Register from './pages/Register';
 import Layout from './components/Layout';
 import Dashboard from './pages/Dashboard';
-import { dbService } from './services/dbService';
-import { offlineService } from './services/offlineService';
 import Inspections from './pages/Inspections';
 import Users from './pages/Users';
 import FormBuilder from './pages/FormBuilder';
@@ -39,29 +37,8 @@ const App: React.FC = () => {
       }
     });
 
-    // Handle Online/Offline Sync
-    const handleOnline = () => {
-      console.log('App is online, processing outbox...');
-      dbService.processOutbox();
-    };
-
-    window.addEventListener('online', handleOnline);
-
-    // Initial check
-    if (navigator.onLine) {
-      dbService.processOutbox();
-    }
-
-    // Storage Estimate Check
-    offlineService.getStorageEstimate().then(estimate => {
-      if (estimate) {
-        console.log(`Storage usage: ${Math.round(estimate.usage! / 1024 / 1024)}MB / ${Math.round(estimate.quota! / 1024 / 1024)}MB`);
-      }
-    });
-
     return () => {
       subscription.unsubscribe();
-      window.removeEventListener('online', handleOnline);
     };
   }, []);
 

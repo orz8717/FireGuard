@@ -109,69 +109,8 @@ BEGIN
             CASE 
                 WHEN p_column_type = 'NUMERIC' THEN 'NUMERIC' 
                 WHEN p_column_type = 'BOOLEAN' THEN 'BOOLEAN' 
-                WHEN p_column_type = 'JSONB' THEN 'JSONB'
-                WHEN p_column_type = 'UUID' THEN 'UUID'
                 ELSE 'TEXT' 
             END;
     NOTIFY pgrst, 'reload schema';
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
-
--- 6. Add get_triggers for schema diagnostics
-CREATE OR REPLACE FUNCTION get_triggers()
-RETURNS TABLE(table_name text, trigger_name text) 
-LANGUAGE sql
-SECURITY DEFINER
-AS $$
-  SELECT event_object_table::text, trigger_name::text
-  FROM information_schema.triggers
-  WHERE trigger_schema = 'public';
-$$;
-
--- 7. Atomic Child Sync Functions
-CREATE OR REPLACE FUNCTION process_child_data_on_save()
-RETURNS TRIGGER AS $$
-DECLARE
-    child_table TEXT;
-    child_config JSONB;
-    fk_col TEXT;
-    records JSONB;
-    record_item JSONB;
-    pk_val TEXT;
-    pk_col TEXT;
-BEGIN
-    pk_col := COALESCE(TG_ARGV[0], 'id');
-    pk_val := (to_jsonb(NEW) ->> pk_col);
-    IF pk_val IS NULL THEN RETURN NEW; END IF;
-    IF NEW.temp_child_data IS NULL OR NEW.temp_child_data = '{}'::jsonb THEN RETURN NEW; END IF;
-
-    FOR child_table, child_config IN SELECT * FROM jsonb_each(NEW.temp_child_data)
-    LOOP
-        fk_col := child_config ->> 'fk_column';
-        records := child_config -> 'records';
-        EXECUTE format('DELETE FROM %I WHERE %I = $1', child_table, fk_col) USING pk_val;
-        IF records IS NOT NULL AND jsonb_array_length(records) > 0 THEN
-            FOR record_item IN SELECT * FROM jsonb_array_elements(records)
-            LOOP
-                record_item := record_item || jsonb_build_object(fk_col, pk_val);
-                EXECUTE format('INSERT INTO %I SELECT * FROM jsonb_populate_record(NULL::%I, $1)', child_table, child_table) USING record_item;
-            END LOOP;
-        END IF;
-    END LOOP;
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
-
-CREATE OR REPLACE FUNCTION attach_child_sync_trigger(p_table_name TEXT, p_pk_col TEXT DEFAULT 'id')
-RETURNS VOID AS $$
-BEGIN
-    EXECUTE format('ALTER TABLE %I ADD COLUMN IF NOT EXISTS temp_child_data JSONB DEFAULT ''{}''::jsonb', p_table_name);
-    EXECUTE format('DROP TRIGGER IF EXISTS trg_sync_children_%I ON %I', p_table_name, p_table_name);
-    EXECUTE format(
-        'CREATE TRIGGER trg_sync_children_%I 
-         AFTER INSERT OR UPDATE ON %I 
-         FOR EACH ROW EXECUTE FUNCTION process_child_data_on_save(%L)',
-        p_table_name, p_table_name, p_pk_col
-    );
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
