@@ -2,6 +2,7 @@
 import React from 'react';
 import { Inspection, InspectionType, InspectionStatus, Customer, User, UserRole, FormTemplate, FieldType } from '../types';
 import { dbService } from '../services/dbService';
+import { offlineService } from '../services/offlineService';
 import { nestChildRecords } from '../utils/dataUtils';
 import { supabase } from '../services/supabaseClient';
 import { Plus, Search, Eye, Edit2, Loader2, ClipboardList, Clock, Trash2, Zap, Building, CreditCard, Fingerprint, Calendar } from 'lucide-react';
@@ -64,27 +65,64 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
 
   const loadDrafts = async () => {
     try {
-      const { data, error } = await supabase
-        .from('inspection_drafts')
-        .select('*')
-        .eq('user_id', user.id);
-        
       let supabaseDrafts: any[] = [];
-      if (!error && data) {
-        supabaseDrafts = data.map(d => ({
-          id: d.id, // Supabase UUID
+      
+      if (navigator.onLine) {
+        try {
+          const { data, error } = await supabase
+            .from('inspection_drafts')
+            .select('*')
+            .eq('user_id', user.id);
+            
+          if (!error && data) {
+            supabaseDrafts = data.map(d => ({
+              id: d.id, // Supabase UUID
+              templateId: d.table_name,
+              templateName: d.data?.templateName || 'טיוטה',
+              customerName: d.data?.customerName || 'לקוח לא ידוע',
+              data: d.data,
+              updatedAt: d.last_updated || d.updated_at || new Date().toISOString(),
+              editingInspectionId: d.data?.editingInspectionId || null,
+              isSupabase: true
+            }));
+
+            // Sync local cache with online drafts
+            await Promise.all(data.map(d => offlineService.saveRecord('inspection_drafts', d)));
+          }
+        } catch (onlineErr) {
+          console.warn('Failed to fetch online drafts:', onlineErr);
+        }
+      }
+
+      // Merge with local drafts (especially important when offline or for unsynced drafts)
+      const localDrafts = await offlineService.getRecords('inspection_drafts');
+      const userLocalDrafts = localDrafts
+        .filter(d => d.user_id === user.id)
+        .map(d => ({
+          id: d.id || d.ROWID,
           templateId: d.table_name,
-          templateName: d.data?.templateName || 'טיוטה',
+          templateName: d.data?.templateName || 'טיוטה (מקומי)',
           customerName: d.data?.customerName || 'לקוח לא ידוע',
           data: d.data,
           updatedAt: d.last_updated || d.updated_at || new Date().toISOString(),
           editingInspectionId: d.data?.editingInspectionId || null,
-          isSupabase: true
+          isSupabase: !!d.id
         }));
-      }
 
-      // Only use Supabase drafts to prevent duplicates
-      const allDrafts = supabaseDrafts.sort((a: any, b: any) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+      // Combine and deduplicate by templateId (since we only allow one draft per template per user)
+      const combinedMap = new Map();
+      
+      // Local drafts first (might be newer)
+      userLocalDrafts.forEach(d => combinedMap.set(d.templateId, d));
+      // Online drafts override if they exist (unless local is newer? for now just merge)
+      supabaseDrafts.forEach(d => {
+        const existing = combinedMap.get(d.templateId);
+        if (!existing || new Date(d.updatedAt) > new Date(existing.updatedAt)) {
+          combinedMap.set(d.templateId, d);
+        }
+      });
+
+      const allDrafts = Array.from(combinedMap.values()).sort((a: any, b: any) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
       setDrafts(allDrafts);
     } catch (err) {
       console.error('Error loading drafts:', err);

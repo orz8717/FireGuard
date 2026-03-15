@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { supabase, supabaseUrl, supabaseAnonKey } from '../services/supabaseClient';
+import { dbService } from '../services/dbService';
+import { offlineService } from '../services/offlineService';
 
 export interface DraftData {
   user_id: string;
@@ -29,15 +31,39 @@ export const useDraftManager = (userId: string, tableName: string, isPreview: bo
       }
       
       try {
-        const { data, error } = await supabase
-          .from('inspection_drafts')
-          .select('data, last_updated')
-          .eq('user_id', userId)
-          .eq('table_name', tableName)
-          .maybeSingle();
+        // Try online first if possible
+        let data: any = null;
+        
+        if (navigator.onLine) {
+          try {
+            const { data: onlineData, error } = await supabase
+              .from('inspection_drafts')
+              .select('data, last_updated')
+              .eq('user_id', userId)
+              .eq('table_name', tableName)
+              .maybeSingle();
 
-        if (error && error.code !== 'PGRST116') {
-          console.error('Error checking draft:', error);
+            if (!error && onlineData) {
+              data = onlineData;
+              // Cache locally
+              await offlineService.saveRecord('inspection_drafts', {
+                user_id: userId,
+                table_name: tableName,
+                data: onlineData.data,
+                last_updated: onlineData.last_updated
+              });
+            }
+          } catch (onlineErr) {
+            console.warn('Online draft check failed, falling back to local:', onlineErr);
+          }
+        }
+
+        // Fallback to local if online failed or we are offline
+        if (!data) {
+          const localDraft = await offlineService.getRecord('inspection_drafts', `${userId}_${tableName}`);
+          if (localDraft) {
+            data = localDraft;
+          }
         }
 
         if (data && data.data) {
@@ -67,11 +93,10 @@ export const useDraftManager = (userId: string, tableName: string, isPreview: bo
     if (!userId || !tableName) return;
     
     try {
-      await supabase
-        .from('inspection_drafts')
-        .delete()
-        .eq('user_id', userId)
-        .eq('table_name', tableName);
+      // Use dbService to handle offline/online sync
+      // The deterministic ROWID for drafts is user_id_table_name
+      const draftRowId = `${userId}_${tableName}`;
+      await dbService.deleteRecord('inspection_drafts', draftRowId);
         
       setHasDraft(false);
       setDraftData(null);
@@ -86,7 +111,6 @@ export const useDraftManager = (userId: string, tableName: string, isPreview: bo
     if (isPreview || isCancellingRef.current) return;
 
     const data = dataToSave || currentDataRef.current;
-    console.log("Draft Check - Current Data:", data);
     if (!userId || !tableName || !data) return;
 
     const INTERNAL_KEYS = ['technicianId', 'ROWID', 'rowid', 'customerId', 'מספר_לקוח', 'templateName', 'customerName', 'id', 'created_at', 'editingInspectionId'];
@@ -101,7 +125,6 @@ export const useDraftManager = (userId: string, tableName: string, isPreview: bo
 
     // If no real content, don't save. If a draft existed, delete it.
     if (!hasActualContent) {
-      setHasDraft(false);
       if (hasDraft) {
         await deleteDraft();
       }
@@ -110,20 +133,13 @@ export const useDraftManager = (userId: string, tableName: string, isPreview: bo
 
     setIsSaving(true);
     try {
-      const { data: result, error } = await supabase
-        .from('inspection_drafts')
-        .upsert({
-          user_id: userId,
-          table_name: tableName,
-          data: data,
-          last_updated: new Date().toISOString()
-        }, { onConflict: 'user_id, table_name' })
-        .select();
-
-      if (error) throw error;
-      if (!result || result.length === 0) {
-        throw new Error(`Data sync failed for table: inspection_drafts`);
-      }
+      // Use dbService to handle offline/online sync
+      await dbService.saveToTable('inspection_drafts', {
+        user_id: userId,
+        table_name: tableName,
+        data: data,
+        last_updated: new Date().toISOString()
+      });
 
       setHasDraft(true);
       setDraftData(data);
@@ -132,7 +148,7 @@ export const useDraftManager = (userId: string, tableName: string, isPreview: bo
     } finally {
       setIsSaving(false);
     }
-  }, [userId, tableName, hasDraft, deleteDraft]);
+  }, [userId, tableName, hasDraft, deleteDraft, isPreview]);
 
   // Auto-save on unmount and beforeunload
   useEffect(() => {

@@ -90,7 +90,7 @@ const DbManager: React.FC = () => {
     setConfirmConfig(null);
     try {
       await dbService.deleteRecord(selectedTable.id, id);
-      setData(prev => prev.filter(item => item.id !== id));
+      setData(prev => prev.filter(item => (item.ROWID || item.id) !== id));
     } catch (err) {
       alert('שגיאה במחיקת הרשומה. ייתכן שיש לה קשרים לטבלאות אחרות.');
     } finally {
@@ -134,12 +134,70 @@ CREATE TRIGGER on_auth_user_created
   AFTER INSERT ON auth.users
   FOR EACH ROW EXECUTE PROCEDURE public.handle_new_user();
 
--- 4. וודא שטבלת users מכילה את כל העמודות הדרושות
-ALTER TABLE public.users ADD COLUMN IF NOT EXISTS phone TEXT;
-ALTER TABLE public.users ADD COLUMN IF NOT EXISTS role TEXT DEFAULT 'USER';
-ALTER TABLE public.users ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT true;
+-- 4. פונקציות עזר לאבחון וניהול סכמה (חובה עבור Diagnostics)
+CREATE OR REPLACE FUNCTION get_triggers()
+RETURNS TABLE(table_name text, trigger_name text) 
+LANGUAGE sql SECURITY DEFINER AS $$
+  SELECT event_object_table::text, trigger_name::text
+  FROM information_schema.triggers
+  WHERE trigger_schema = 'public';
+$$;
 
--- 5. רענון סכמה
+CREATE OR REPLACE FUNCTION add_column_to_table(p_table_name TEXT, p_column_name TEXT, p_column_type TEXT)
+RETURNS void AS $$
+BEGIN
+    EXECUTE 'ALTER TABLE ' || quote_ident(p_table_name) || ' ADD COLUMN IF NOT EXISTS ' || quote_ident(p_column_name) || ' ' || 
+            CASE 
+                WHEN p_column_type = 'NUMERIC' THEN 'NUMERIC' 
+                WHEN p_column_type = 'BOOLEAN' THEN 'BOOLEAN' 
+                WHEN p_column_type = 'JSONB' THEN 'JSONB'
+                WHEN p_column_type = 'UUID' THEN 'UUID'
+                ELSE 'TEXT' 
+            END;
+    NOTIFY pgrst, 'reload schema';
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- 5. תשתית לשמירה אטומית (Atomic Parent-Child Sync)
+CREATE OR REPLACE FUNCTION process_child_data_on_save()
+RETURNS TRIGGER AS $$
+DECLARE
+    child_table TEXT; child_config JSONB; fk_col TEXT; records JSONB; record_item JSONB; pk_val TEXT; pk_col TEXT;
+BEGIN
+    pk_col := COALESCE(TG_ARGV[0], 'id');
+    pk_val := (to_jsonb(NEW) ->> pk_col);
+    IF pk_val IS NULL THEN RETURN NEW; END IF;
+    IF NEW.temp_child_data IS NULL OR NEW.temp_child_data = '{}'::jsonb THEN RETURN NEW; END IF;
+    FOR child_table, child_config IN SELECT * FROM jsonb_each(NEW.temp_child_data) LOOP
+        fk_col := child_config ->> 'fk_column';
+        records := child_config -> 'records';
+        EXECUTE format('DELETE FROM %I WHERE %I = $1', child_table, fk_col) USING pk_val;
+        IF records IS NOT NULL AND jsonb_array_length(records) > 0 THEN
+            FOR record_item IN SELECT * FROM jsonb_array_elements(records) LOOP
+                record_item := record_item || jsonb_build_object(fk_col, pk_val);
+                EXECUTE format('INSERT INTO %I SELECT * FROM jsonb_populate_record(NULL::%I, $1)', child_table, child_table) USING record_item;
+            END LOOP;
+        END IF;
+    END LOOP;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE OR REPLACE FUNCTION attach_child_sync_trigger(p_table_name TEXT, p_pk_col TEXT DEFAULT 'id')
+RETURNS VOID AS $$
+BEGIN
+    EXECUTE format('ALTER TABLE %I ADD COLUMN IF NOT EXISTS temp_child_data JSONB DEFAULT ''{}''::jsonb', p_table_name);
+    EXECUTE format('DROP TRIGGER IF EXISTS trg_sync_children_%I ON %I', p_table_name, p_table_name);
+    EXECUTE format(
+        'CREATE TRIGGER trg_sync_children_%I 
+         AFTER INSERT OR UPDATE ON %I 
+         FOR EACH ROW EXECUTE FUNCTION process_child_data_on_save(%L)',
+        p_table_name, p_table_name, p_pk_col
+    );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- 6. רענון סכמה
 NOTIFY pgrst, 'reload schema';`;
 
   return (
@@ -255,15 +313,15 @@ NOTIFY pgrst, 'reload schema';`;
                     </thead>
                     <tbody className="divide-y divide-slate-100 bg-white">
                       {filteredData.map((item, idx) => (
-                        <tr key={item.id || idx} className="hover:bg-blue-50/50 transition-colors group">
+                        <tr key={item.ROWID || item.id || idx} className="hover:bg-blue-50/50 transition-colors group">
                           {isAdmin && (
                             <td className="p-4 text-center border-l border-slate-50">
                               <button 
-                                onClick={() => setConfirmConfig({ id: item.id })}
-                                disabled={deletingId === item.id}
+                                onClick={() => setConfirmConfig({ id: item.ROWID || item.id })}
+                                disabled={deletingId === (item.ROWID || item.id)}
                                 className="p-2 text-slate-300 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all"
                               >
-                                {deletingId === item.id ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+                                {deletingId === (item.ROWID || item.id) ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
                               </button>
                             </td>
                           )}

@@ -1,5 +1,6 @@
 import { supabase, supabaseAdmin, supabaseAnon } from './supabaseClient';
 import { User, Customer, Inspection, Certificate, FormTemplate, Permission, UserRole, InspectionStatus, InspectionType, FormField, FieldType, AuditLog } from '../types';
+import { offlineService } from './offlineService';
 
 class DBService {
   public supabaseAdmin = supabaseAdmin;
@@ -268,31 +269,137 @@ class DBService {
   async saveToTable(tableName: string, payload: any, useAdmin: boolean = false) {
     const client = useAdmin ? supabaseAdmin : supabase;
     
-    // Determine the conflict target. 
-    // We prioritize business keys (ROWID for dynamic tables, serial_number for inspections)
-    // to prevent "duplicate key" errors during atomic saves or draft promotions.
-    const options: any = { onConflict: 'id' };
-    if (payload.ROWID) {
-      options.onConflict = 'ROWID';
-    } else if (payload.serial_number) {
-      options.onConflict = 'serial_number';
+    // 1. Update last_modified_client
+    payload.last_modified_client = new Date().toISOString();
+
+    // 2. Write-Through Caching to IndexedDB
+    // We use the ID as the key. If it's a ROWID, it's fine for local storage.
+    const localStoreName = this.mapTableToStore(tableName);
+    if (localStoreName) {
+      await offlineService.put(localStoreName, payload);
     }
 
-    const { data, error } = await client
-      .from(tableName)
-      .upsert(payload, options)
-      .select();
-
-    if (error) {
-      console.error(`Error saving to ${tableName}:`, error.message);
-      throw error;
+    // 3. Handle Offline/Online logic
+    if (!navigator.onLine) {
+      await offlineService.addToOutbox({
+        tableName,
+        action: payload.id ? 'UPDATE' : 'INSERT',
+        payload,
+        rowId: payload.ROWID || (offlineService.isROWID(payload.id) ? payload.id : undefined)
+      });
+      return payload;
     }
 
-    if (!data || data.length === 0) {
-      throw new Error(`Data sync failed for table: ${tableName}`);
-    }
+    try {
+      // 4. Prepare payload for Supabase (Strip ROWID from UUID column)
+      const supabasePayload = { ...payload };
+      if (supabasePayload.id && !offlineService.isUUID(supabasePayload.id)) {
+        // If ID is a ROWID, don't send it to Supabase as 'id' (UUID column)
+        // Ensure it's stored in ROWID column if applicable
+        if (!supabasePayload.ROWID) supabasePayload.ROWID = supabasePayload.id;
+        delete supabasePayload.id;
+      }
 
-    return data[0];
+      const options: any = { onConflict: 'id' };
+      if (supabasePayload.ROWID) {
+        options.onConflict = 'ROWID';
+      } else if (supabasePayload.serial_number) {
+        options.onConflict = 'serial_number';
+      }
+
+      const { data, error } = await client
+        .from(tableName)
+        .upsert(supabasePayload, options)
+        .select();
+
+      if (error) {
+        console.error(`Error saving to ${tableName}:`, error.message);
+        // Fallback to outbox if Supabase fails (e.g. temporary network glitch)
+        await offlineService.addToOutbox({
+          tableName,
+          action: payload.id ? 'UPDATE' : 'INSERT',
+          payload,
+          rowId: payload.ROWID || (offlineService.isROWID(payload.id) ? payload.id : undefined)
+        });
+        return payload;
+      }
+
+      if (!data || data.length === 0) {
+        throw new Error(`Data sync failed for table: ${tableName}`);
+      }
+
+      const result = data[0];
+
+      // 5. Update local store with the returned UUID
+      if (localStoreName && result.id && payload.id !== result.id) {
+        // If we had a local ID (ROWID) and now have a UUID, update local store
+        if (payload.id) await offlineService.delete(localStoreName, payload.id);
+        await offlineService.put(localStoreName, result);
+      }
+
+      return result;
+    } catch (err) {
+      console.error(`Sync failed for ${tableName}, adding to outbox:`, err);
+      await offlineService.addToOutbox({
+        tableName,
+        action: payload.id ? 'UPDATE' : 'INSERT',
+        payload,
+        rowId: payload.ROWID || (offlineService.isROWID(payload.id) ? payload.id : undefined)
+      });
+      return payload;
+    }
+  }
+
+  private mapTableToStore(tableName: string): string | null {
+    const mapping: Record<string, string> = {
+      'inspections': 'inspections',
+      'customers': 'customers',
+      'users': 'users',
+      'permissions': 'permissions',
+      'certificates': 'certificates',
+      'form_templates': 'form_templates'
+    };
+    return mapping[tableName] || null;
+  }
+
+  async processOutbox() {
+    if (!navigator.onLine) return;
+
+    const outbox = await offlineService.getOutbox();
+    for (const item of outbox) {
+      try {
+        // We use saveToTable which now handles the ROWID/UUID logic
+        // But we need to be careful not to create a loop.
+        // We'll call a specialized internal method or just use the Supabase client directly here.
+        
+        const supabasePayload = { ...item.payload };
+        if (supabasePayload.id && !offlineService.isUUID(supabasePayload.id)) {
+          if (!supabasePayload.ROWID) supabasePayload.ROWID = supabasePayload.id;
+          delete supabasePayload.id;
+        }
+
+        const options: any = { onConflict: 'id' };
+        if (supabasePayload.ROWID) options.onConflict = 'ROWID';
+        else if (supabasePayload.serial_number) options.onConflict = 'serial_number';
+
+        const { data, error } = await supabaseAdmin
+          .from(item.tableName)
+          .upsert(supabasePayload, options)
+          .select();
+
+        if (!error && data && data.length > 0) {
+          const result = data[0];
+          const localStoreName = this.mapTableToStore(item.tableName);
+          if (localStoreName && result.id && item.payload.id !== result.id) {
+            if (item.payload.id) await offlineService.delete(localStoreName, item.payload.id);
+            await offlineService.put(localStoreName, result);
+          }
+          await offlineService.removeFromOutbox(item.id!);
+        }
+      } catch (err) {
+        console.error('Failed to process outbox item:', item, err);
+      }
+    }
   }
 
   async deleteRecord(tableName: string, id: string | number) {
@@ -301,17 +408,53 @@ class DBService {
   }
 
   async getUsers(): Promise<User[]> {
-    const data = await this.fetchFullTable('users', 'created_at', false, true);
-    return (data || []).map(u => ({
-      id: u.id,
-      name: u.name,
-      email: u.email,
-      phone: u.phone,
-      role: u.role,
-      isActive: u.is_active,
-      createdAt: u.created_at,
-      updatedAt: u.updated_at
-    }));
+    const localStore = this.mapTableToStore('users');
+    let localData: User[] = [];
+    if (localStore) {
+      localData = await offlineService.getAll<User>(localStore);
+    }
+
+    if (!navigator.onLine) {
+      return localData.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    }
+
+    try {
+      const remoteData = await this.fetchFullTable('users', 'created_at', false, true);
+      const mappedRemote: User[] = (remoteData || []).map(u => ({
+        id: u.id,
+        name: u.name,
+        email: u.email,
+        phone: u.phone,
+        role: u.role,
+        isActive: u.is_active,
+        last_modified_client: u.last_modified_client,
+        createdAt: u.created_at,
+        updatedAt: u.updated_at
+      }));
+
+      if (localStore) {
+        for (const item of mappedRemote) {
+          const localItem = localData.find(l => l.id === item.id);
+          if (!localItem || (item.last_modified_client && (!localItem.last_modified_client || new Date(item.last_modified_client) > new Date(localItem.last_modified_client)))) {
+            await offlineService.put(localStore, item);
+          }
+        }
+      }
+
+      const merged = [...mappedRemote];
+      for (const localItem of localData) {
+        const remoteIndex = merged.findIndex(r => r.id === localItem.id);
+        if (remoteIndex === -1) merged.push(localItem);
+        else if (localItem.last_modified_client && (!merged[remoteIndex].last_modified_client || new Date(localItem.last_modified_client) > new Date(merged[remoteIndex].last_modified_client))) {
+          merged[remoteIndex] = localItem;
+        }
+      }
+
+      return merged.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    } catch (err) {
+      console.error('Failed to fetch remote users, using local:', err);
+      return localData.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    }
   }
 
   async updateUser(id: string, updates: Partial<User>) {
@@ -417,21 +560,42 @@ class DBService {
   }
 
   async getPermissions(userId: string): Promise<Permission[]> {
-    const { data, error } = await supabase.from('permissions').select('*').eq('user_id', userId);
-    if (error) throw error;
-    return (data || []).map(p => ({
-      id: p.id,
-      userId: p.user_id,
-      screenKey: p.screen_key,
-      canView: !!p.can_view,
-      canCreate: !!p.can_create,
-      canEdit: !!p.can_edit,
-      canDelete: !!p.can_delete,
-      canExport: !!p.can_export,
-      canApprove: !!p.can_approve,
-      canGenerateCertificates: !!p.can_generate_certificates,
-      canImportExcel: !!p.can_import_excel
-    }));
+    const localStore = this.mapTableToStore('permissions');
+    let localData: Permission[] = [];
+    if (localStore) {
+      localData = (await offlineService.getAll<Permission>(localStore)).filter(p => p.userId === userId);
+    }
+
+    if (!navigator.onLine) return localData;
+
+    try {
+      const { data, error } = await supabase.from('permissions').select('*').eq('user_id', userId);
+      if (error) throw error;
+      const mappedRemote: Permission[] = (data || []).map(p => ({
+        id: p.id,
+        userId: p.user_id,
+        screenKey: p.screen_key,
+        canView: !!p.can_view,
+        canCreate: !!p.can_create,
+        canEdit: !!p.can_edit,
+        canDelete: !!p.can_delete,
+        canExport: !!p.can_export,
+        canApprove: !!p.can_approve,
+        canGenerateCertificates: !!p.can_generate_certificates,
+        canImportExcel: !!p.can_import_excel
+      }));
+
+      if (localStore) {
+        for (const item of mappedRemote) {
+          await offlineService.put(localStore, item);
+        }
+      }
+
+      return mappedRemote;
+    } catch (err) {
+      console.error('Failed to fetch remote permissions, using local:', err);
+      return localData;
+    }
   }
 
   async savePermissions(userId: string, permissions: Partial<Permission>[]) {
@@ -454,20 +618,59 @@ class DBService {
   }
 
   async getCustomers(): Promise<Customer[]> {
-    const data = await this.fetchFullTable('customers', 'name', true, false);
-    return (data || []).map(c => ({
-      id: c.id,
-      customerNumber: c.customer_number,
-      name: c.name,
-      address: c.address,
-      city: c.city,
-      contactName: c.contact_name,
-      contactPhone: c.contact_phone,
-      contactEmail: c.contact_email,
-      notes: c.notes,
-      createdAt: c.created_at,
-      updatedAt: c.updated_at
-    }));
+    const localStore = this.mapTableToStore('customers');
+    let localData: Customer[] = [];
+    if (localStore) {
+      localData = await offlineService.getAll<Customer>(localStore);
+    }
+
+    if (!navigator.onLine) {
+      return localData.sort((a, b) => a.name.localeCompare(b.name));
+    }
+
+    try {
+      const remoteData = await this.fetchFullTable('customers', 'name', true, false);
+      const mappedRemote: Customer[] = (remoteData || []).map(c => ({
+        id: c.id,
+        customerNumber: c.customer_number,
+        name: c.name,
+        address: c.address,
+        city: c.city,
+        contactName: c.contact_name,
+        contactPhone: c.contact_phone,
+        contactEmail: c.contact_email,
+        notes: c.notes,
+        last_modified_client: c.last_modified_client,
+        createdAt: c.created_at,
+        updatedAt: c.updated_at
+      }));
+
+      // Sync remote to local
+      if (localStore) {
+        for (const item of mappedRemote) {
+          const localItem = localData.find(l => l.id === item.id);
+          if (!localItem || (item.last_modified_client && (!localItem.last_modified_client || new Date(item.last_modified_client) > new Date(localItem.last_modified_client)))) {
+            await offlineService.put(localStore, item);
+          }
+        }
+      }
+
+      // Merge: Prefer local if it has a newer last_modified_client
+      const merged = [...mappedRemote];
+      for (const localItem of localData) {
+        const remoteIndex = merged.findIndex(r => r.id === localItem.id);
+        if (remoteIndex === -1) {
+          merged.push(localItem);
+        } else if (localItem.last_modified_client && (!merged[remoteIndex].last_modified_client || new Date(localItem.last_modified_client) > new Date(merged[remoteIndex].last_modified_client))) {
+          merged[remoteIndex] = localItem;
+        }
+      }
+
+      return merged.sort((a, b) => a.name.localeCompare(b.name));
+    } catch (err) {
+      console.error('Failed to fetch remote customers, using local:', err);
+      return localData.sort((a, b) => a.name.localeCompare(b.name));
+    }
   }
 
   async addCustomer(customer: Partial<Customer>) {
@@ -531,21 +734,60 @@ class DBService {
   }
 
   async getInspections(): Promise<Inspection[]> {
-    const data = await this.fetchFullTable('inspections', 'created_at', false, false);
-    return (data || []).map(item => ({
-      id: item.id,
-      inspectionSerialNumber: item.serial_number,
-      inspectionType: item.type as InspectionType,
-      templateName: item.data?.templateName || item.template_name, // Try to get from data or column if it exists
-      customerId: item.customer_id,
-      technicianId: item.technician_id,
-      inspectionDate: item.inspection_date,
-      status: item.status as InspectionStatus,
-      data: item.data,
-      tempChildData: item.temp_child_data,
-      createdAt: item.created_at,
-      updatedAt: item.updated_at
-    }));
+    const localStore = this.mapTableToStore('inspections');
+    let localData: Inspection[] = [];
+    if (localStore) {
+      localData = await offlineService.getAll<Inspection>(localStore);
+    }
+
+    if (!navigator.onLine) {
+      return localData.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    }
+
+    try {
+      const remoteData = await this.fetchFullTable('inspections', 'created_at', false, false);
+      const mappedRemote: Inspection[] = (remoteData || []).map(item => ({
+        id: item.id,
+        inspectionSerialNumber: item.serial_number,
+        inspectionType: item.type as InspectionType,
+        templateName: item.data?.templateName || item.template_name,
+        customerId: item.customer_id,
+        technicianId: item.technician_id,
+        inspectionDate: item.inspection_date,
+        status: item.status as InspectionStatus,
+        data: item.data,
+        tempChildData: item.temp_child_data,
+        last_modified_client: item.last_modified_client,
+        createdAt: item.created_at,
+        updatedAt: item.updated_at
+      }));
+
+      // Sync remote to local
+      if (localStore) {
+        for (const item of mappedRemote) {
+          const localItem = localData.find(l => l.id === item.id);
+          if (!localItem || (item.last_modified_client && (!localItem.last_modified_client || new Date(item.last_modified_client) > new Date(localItem.last_modified_client)))) {
+            await offlineService.put(localStore, item);
+          }
+        }
+      }
+
+      // Merge
+      const merged = [...mappedRemote];
+      for (const localItem of localData) {
+        const remoteIndex = merged.findIndex(r => r.id === localItem.id);
+        if (remoteIndex === -1) {
+          merged.push(localItem);
+        } else if (localItem.last_modified_client && (!merged[remoteIndex].last_modified_client || new Date(localItem.last_modified_client) > new Date(merged[remoteIndex].last_modified_client))) {
+          merged[remoteIndex] = localItem;
+        }
+      }
+
+      return merged.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    } catch (err) {
+      console.error('Failed to fetch remote inspections, using local:', err);
+      return localData.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    }
   }
 
   async addInspection(inspection: Partial<Inspection>, tableName: string = 'inspections', childData?: Record<string, any[]>) {
@@ -806,46 +1048,70 @@ class DBService {
   }
 
   async getFormTemplates(): Promise<FormTemplate[]> {
-    const templates = await this.fetchFullTable('form_templates', 'created_at', true, false);
-    const fields = await this.fetchFullTable('form_fields', 'order_index', true, false);
+    const localStore = this.mapTableToStore('form_templates');
+    let localData: FormTemplate[] = [];
+    if (localStore) {
+      localData = await offlineService.getAll<FormTemplate>(localStore);
+    }
 
-    return templates.map(t => ({
-      id: t.id,
-      formKey: t.form_key,
-      name: t.name,
-      description: t.description,
-      isActive: t.is_active,
-      tableName: t.table_name,
-      createdAt: t.created_at,
-      navigation_config: t.navigation_config,
-      fields: fields.filter(f => f.template_id === t.id).map(f => {
-        const rawOptions = (f.options || {}) as any;
-        const isLegacyArray = Array.isArray(rawOptions);
-        return {
-          id: f.id,
-          formTemplateId: f.template_id,
-          fieldKey: f.field_key,
-          label: f.label,
-          fieldType: f.field_type,
-          isRequired: f.is_required,
-          defaultValue: f.default_value,
-          orderIndex: f.order_index,
-          visibilityCondition: f.visibility_condition,
-          validationFormula: f.validation_formula, 
-          calculationFormula: f.calculation_formula,
-          options: isLegacyArray ? rawOptions : (rawOptions.selection || []),
-          yesLabel: isLegacyArray ? f.yes_label : (rawOptions.yesLabel || f.yes_label),
-          noLabel: isLegacyArray ? f.no_label : (rawOptions.noLabel || f.no_label),
-          dataSourceType: isLegacyArray ? f.data_source_type : (rawOptions.dataSourceType || f.data_source_type),
-          displayMode: isLegacyArray ? f.display_mode : (rawOptions.displayMode || f.display_mode),
-          manualOptions: isLegacyArray ? (f.manual_options || []) : (rawOptions.manualOptions || f.manual_options || []),
-          supabaseConfig: isLegacyArray ? f.supabase_config : (rawOptions.supabaseConfig || f.supabase_config),
-          targetFormId: isLegacyArray ? f.target_form_id : (rawOptions.targetFormId || f.target_form_id),
-          isVirtual: isLegacyArray ? !!f.is_virtual : !!(rawOptions.isVirtual || f.is_virtual),
-          isHidden: isLegacyArray ? !!f.is_hidden : !!(rawOptions.isHidden || f.is_hidden)
-        };
-      })
-    })) as FormTemplate[];
+    if (!navigator.onLine) {
+      return localData.sort((a, b) => a.name.localeCompare(b.name));
+    }
+
+    try {
+      const templates = await this.fetchFullTable('form_templates', 'created_at', true, false);
+      const fields = await this.fetchFullTable('form_fields', 'order_index', true, false);
+
+      const mappedRemote = templates.map(t => ({
+        id: t.id,
+        formKey: t.form_key,
+        name: t.name,
+        description: t.description,
+        isActive: t.is_active,
+        tableName: t.table_name,
+        createdAt: t.created_at,
+        navigation_config: t.navigation_config,
+        fields: fields.filter(f => f.template_id === t.id).map(f => {
+          const rawOptions = (f.options || {}) as any;
+          const isLegacyArray = Array.isArray(rawOptions);
+          return {
+            id: f.id,
+            formTemplateId: f.template_id,
+            fieldKey: f.field_key,
+            label: f.label,
+            fieldType: f.field_type,
+            isRequired: f.is_required,
+            defaultValue: f.default_value,
+            orderIndex: f.order_index,
+            visibilityCondition: f.visibility_condition,
+            validationFormula: f.validation_formula, 
+            calculationFormula: f.calculation_formula,
+            options: isLegacyArray ? rawOptions : (rawOptions.selection || []),
+            yesLabel: isLegacyArray ? f.yes_label : (rawOptions.yesLabel || f.yes_label),
+            noLabel: isLegacyArray ? f.no_label : (rawOptions.noLabel || f.no_label),
+            dataSourceType: isLegacyArray ? f.data_source_type : (rawOptions.dataSourceType || f.data_source_type),
+            displayMode: isLegacyArray ? f.display_mode : (rawOptions.displayMode || f.display_mode),
+            manualOptions: isLegacyArray ? (f.manual_options || []) : (rawOptions.manualOptions || f.manual_options || []),
+            supabaseConfig: isLegacyArray ? f.supabase_config : (rawOptions.supabaseConfig || f.supabase_config),
+            targetFormId: isLegacyArray ? f.target_form_id : (rawOptions.targetFormId || f.target_form_id),
+            isVirtual: isLegacyArray ? !!f.is_virtual : !!(rawOptions.isVirtual || f.is_virtual),
+            isHidden: isLegacyArray ? !!f.is_hidden : !!(rawOptions.isHidden || f.is_hidden)
+          };
+        })
+      })) as FormTemplate[];
+
+      if (localStore) {
+        await offlineService.clearStore(localStore);
+        for (const item of mappedRemote) {
+          await offlineService.put(localStore, item);
+        }
+      }
+
+      return mappedRemote;
+    } catch (err) {
+      console.error('Failed to fetch remote templates, using local:', err);
+      return localData;
+    }
   }
 
   async getFormTemplate(formKey: string): Promise<FormTemplate | null> {
@@ -930,18 +1196,54 @@ class DBService {
   }
 
   async getCertificates(): Promise<Certificate[]> {
-    const data = await this.fetchFullTable('certificates', undefined, true, false);
-    return (data || []).map(c => ({
-      id: c.id,
-      inspectionId: c.inspection_id,
-      certificateType: c.type,
-      certificateNumber: c.certificate_number,
-      issueDate: c.issue_date,
-      status: c.status,
-      notes: c.notes,
-      createdAt: c.created_at,
-      updatedAt: c.updated_at
-    }));
+    const localStore = this.mapTableToStore('certificates');
+    let localData: Certificate[] = [];
+    if (localStore) {
+      localData = await offlineService.getAll<Certificate>(localStore);
+    }
+
+    if (!navigator.onLine) {
+      return localData.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    }
+
+    try {
+      const remoteData = await this.fetchFullTable('certificates', undefined, true, false);
+      const mappedRemote: Certificate[] = (remoteData || []).map(c => ({
+        id: c.id,
+        inspectionId: c.inspection_id,
+        certificateType: c.type,
+        certificateNumber: c.certificate_number,
+        issueDate: c.issue_date,
+        status: c.status,
+        notes: c.notes,
+        last_modified_client: c.last_modified_client,
+        createdAt: c.created_at,
+        updatedAt: c.updated_at
+      }));
+
+      if (localStore) {
+        for (const item of mappedRemote) {
+          const localItem = localData.find(l => l.id === item.id);
+          if (!localItem || (item.last_modified_client && (!localItem.last_modified_client || new Date(item.last_modified_client) > new Date(localItem.last_modified_client)))) {
+            await offlineService.put(localStore, item);
+          }
+        }
+      }
+
+      const merged = [...mappedRemote];
+      for (const localItem of localData) {
+        const remoteIndex = merged.findIndex(r => r.id === localItem.id);
+        if (remoteIndex === -1) merged.push(localItem);
+        else if (localItem.last_modified_client && (!merged[remoteIndex].last_modified_client || new Date(localItem.last_modified_client) > new Date(merged[remoteIndex].last_modified_client))) {
+          merged[remoteIndex] = localItem;
+        }
+      }
+
+      return merged.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    } catch (err) {
+      console.error('Failed to fetch remote certificates, using local:', err);
+      return localData.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    }
   }
 
   async createDynamicTable(tableName: string, columns: any[], overwrite: boolean = false): Promise<void> {
