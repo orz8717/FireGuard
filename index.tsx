@@ -10,6 +10,17 @@ if (!rootElement) {
 }
 
 const root = ReactDOM.createRoot(rootElement);
+
+// Global error handler for Supabase refresh token issues
+window.addEventListener('unhandledrejection', (event) => {
+  if (event.reason && (event.reason.message?.includes('Refresh Token') || event.reason.message?.includes('refresh_token_not_found'))) {
+    console.error('Auth session error detected, clearing local storage...');
+    localStorage.removeItem('fireguard_session');
+    // We don't necessarily want to reload immediately as it might cause a loop, 
+    // but the app state should react to the missing session.
+  }
+});
+
 root.render(
   <React.StrictMode>
     <App />

@@ -3,7 +3,7 @@ import { openDB, IDBPDatabase } from 'idb';
 import { Inspection, Customer, User, Certificate, FormTemplate, Permission } from '../types';
 
 const DB_NAME = 'fireguard_offline_db';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 export interface SyncOutboxItem {
   id?: number;
@@ -21,7 +21,7 @@ export const OFFLINE_TABLES = [
   'NOYES1',
   'NOYES2',
   'Panel',
-  'Signiture',
+  'Signture',
   'YESNO',
   'audit_logs',
   'automation_bots',
@@ -87,9 +87,12 @@ class OfflineService {
 
   async put<T>(storeName: string, item: T) {
     const db = await this.db;
-    // Ensure ROWID exists if it's the keyPath
-    if (item && typeof item === 'object' && !('ROWID' in item)) {
-      (item as any).ROWID = (item as any).id || (item as any).serial_number || Math.random().toString(36).substr(2, 9);
+    // Ensure ROWID exists and is a valid key (not null/undefined)
+    if (item && typeof item === 'object') {
+      const obj = item as any;
+      if (obj.ROWID === undefined || obj.ROWID === null || obj.ROWID === '') {
+        obj.ROWID = obj.id || obj.serial_number || Math.random().toString(36).substr(2, 9);
+      }
     }
     return db.put(storeName, item);
   }
@@ -99,8 +102,11 @@ class OfflineService {
     const tx = db.transaction(storeName, 'readwrite');
     const store = tx.objectStore(storeName);
     for (const item of items) {
-      if (item && typeof item === 'object' && !('ROWID' in item)) {
-        (item as any).ROWID = (item as any).id || (item as any).serial_number || Math.random().toString(36).substr(2, 9);
+      if (item && typeof item === 'object') {
+        const obj = item as any;
+        if (obj.ROWID === undefined || obj.ROWID === null || obj.ROWID === '') {
+          obj.ROWID = obj.id || obj.serial_number || Math.random().toString(36).substr(2, 9);
+        }
       }
       store.put(item);
     }
