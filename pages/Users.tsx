@@ -27,10 +27,14 @@ const Users: React.FC<UsersProps> = ({ onNavigateToSignup }) => {
     { key: 'dashboard', label: 'לוח בקרה' },
     { key: 'customers', label: 'לקוחות' },
     { key: 'inspections', label: 'ביקורות' },
-    { key: 'certificates', label: 'אישורים' },
+    { key: 'certificates', label: 'אישורים / תעודות' },
     { key: 'users', label: 'ניהול משתמשים' },
     { key: 'form_builder', label: 'עורך טפסים' },
-    { key: 'import', label: 'ייבוא' },
+    { key: 'import', label: 'ייבוא נתונים' },
+    { key: 'db_manager', label: 'ניהול בסיס נתונים' },
+    { key: 'audit_logs', label: 'יומן פעילות' },
+    { key: 'diagnostics', label: 'אבחון מערכת' },
+    { key: 'triggers', label: 'טריגרים' },
   ];
 
   const loadUsers = async () => {
@@ -53,13 +57,65 @@ const Users: React.FC<UsersProps> = ({ onNavigateToSignup }) => {
     setNewPassword('');
     setShowPassword(false);
     const userPerms = await dbService.getPermissions(user.id);
+    
+    // Define default permissions based on role if no record exists
+    const getDefaultPerms = (screenKey: string, role: UserRole) => {
+      const isAdmin = role === UserRole.ADMIN;
+      const isOffice = role === UserRole.OFFICE;
+      
+      // Admin has everything
+      if (isAdmin) return true;
+      
+      // Office has specific screens
+      if (isOffice) {
+        const officeScreens = ['dashboard', 'customers', 'inspections', 'certificates', 'import', 'triggers'];
+        if (officeScreens.includes(screenKey)) return true;
+      }
+      
+      // Regular user has basic screens
+      const userScreens = ['dashboard', 'customers', 'inspections'];
+      if (userScreens.includes(screenKey)) return true;
+      
+      return false;
+    };
+
     // Initialize default perms for screens not present
     const fullPerms = screens.map(s => {
       const existing = userPerms.find(p => p.screenKey === s.key);
-      return existing || {
-        id: '', userId: user.id, screenKey: s.key,
-        canView: false, canCreate: false, canEdit: false, canDelete: false,
-        canExport: false, canApprove: false, canGenerateCertificates: false, canImportExcel: false
+      const isAdmin = user.role === UserRole.ADMIN;
+
+      // If it's an admin, we force all permissions to true for the UI
+      if (isAdmin) {
+        return {
+          id: existing?.id || '', 
+          userId: user.id, 
+          screenKey: s.key,
+          canView: true, 
+          canCreate: true, 
+          canEdit: true, 
+          canDelete: true,
+          canExport: true, 
+          canApprove: true, 
+          canGenerateCertificates: true, 
+          canImportExcel: true
+        };
+      }
+
+      if (existing) return existing;
+      
+      const defaultVal = getDefaultPerms(s.key, user.role);
+      return {
+        id: '', 
+        userId: user.id, 
+        screenKey: s.key,
+        canView: defaultVal, 
+        canCreate: defaultVal, 
+        canEdit: defaultVal, 
+        canDelete: defaultVal,
+        canExport: defaultVal, 
+        canApprove: defaultVal, 
+        canGenerateCertificates: defaultVal, 
+        canImportExcel: defaultVal
       };
     });
     setPermissions(fullPerms as Permission[]);
@@ -349,19 +405,21 @@ const Users: React.FC<UsersProps> = ({ onNavigateToSignup }) => {
                         <th className="p-3 text-center whitespace-nowrap">ייצוא</th>
                         <th className="p-3 text-center whitespace-nowrap">אישור</th>
                         <th className="p-3 text-center whitespace-nowrap">הנפקת תעודות</th>
+                        <th className="p-3 text-center whitespace-nowrap">ייבוא אקסל</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y">
                       {permissions.map(p => (
                         <tr key={p.screenKey} className="hover:bg-slate-50">
                           <td className="p-3 font-bold text-slate-700 bg-slate-50">{screens.find(s => s.key === p.screenKey)?.label}</td>
-                          <td className="p-3 text-center"><input type="checkbox" checked={p.canView} onChange={() => togglePermission(p.screenKey, 'canView')} className="w-5 h-5 cursor-pointer" /></td>
-                          <td className="p-3 text-center"><input type="checkbox" checked={p.canCreate} onChange={() => togglePermission(p.screenKey, 'canCreate')} className="w-5 h-5 cursor-pointer" /></td>
-                          <td className="p-3 text-center"><input type="checkbox" checked={p.canEdit} onChange={() => togglePermission(p.screenKey, 'canEdit')} className="w-5 h-5 cursor-pointer" /></td>
-                          <td className="p-3 text-center"><input type="checkbox" checked={p.canDelete} onChange={() => togglePermission(p.screenKey, 'canDelete')} className="w-5 h-5 cursor-pointer" /></td>
-                          <td className="p-3 text-center"><input type="checkbox" checked={p.canExport} onChange={() => togglePermission(p.screenKey, 'canExport')} className="w-5 h-5 cursor-pointer" /></td>
-                          <td className="p-3 text-center"><input type="checkbox" checked={p.canApprove} onChange={() => togglePermission(p.screenKey, 'canApprove')} className="w-5 h-5 cursor-pointer" /></td>
-                          <td className="p-3 text-center"><input type="checkbox" checked={p.canGenerateCertificates} onChange={() => togglePermission(p.screenKey, 'canGenerateCertificates')} className="w-5 h-5 cursor-pointer" /></td>
+                          <td className="p-3 text-center"><input type="checkbox" checked={p.canView} onChange={() => togglePermission(p.screenKey, 'canView')} className="w-5 h-5 cursor-pointer accent-blue-600" /></td>
+                          <td className="p-3 text-center"><input type="checkbox" checked={p.canCreate} onChange={() => togglePermission(p.screenKey, 'canCreate')} className="w-5 h-5 cursor-pointer accent-blue-600" /></td>
+                          <td className="p-3 text-center"><input type="checkbox" checked={p.canEdit} onChange={() => togglePermission(p.screenKey, 'canEdit')} className="w-5 h-5 cursor-pointer accent-blue-600" /></td>
+                          <td className="p-3 text-center"><input type="checkbox" checked={p.canDelete} onChange={() => togglePermission(p.screenKey, 'canDelete')} className="w-5 h-5 cursor-pointer accent-blue-600" /></td>
+                          <td className="p-3 text-center"><input type="checkbox" checked={p.canExport} onChange={() => togglePermission(p.screenKey, 'canExport')} className="w-5 h-5 cursor-pointer accent-blue-600" /></td>
+                          <td className="p-3 text-center"><input type="checkbox" checked={p.canApprove} onChange={() => togglePermission(p.screenKey, 'canApprove')} className="w-5 h-5 cursor-pointer accent-blue-600" /></td>
+                          <td className="p-3 text-center"><input type="checkbox" checked={p.canGenerateCertificates} onChange={() => togglePermission(p.screenKey, 'canGenerateCertificates')} className="w-5 h-5 cursor-pointer accent-blue-600" /></td>
+                          <td className="p-3 text-center"><input type="checkbox" checked={p.canImportExcel} onChange={() => togglePermission(p.screenKey, 'canImportExcel')} className="w-5 h-5 cursor-pointer accent-blue-600" /></td>
                         </tr>
                       ))}
                     </tbody>
