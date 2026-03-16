@@ -16,7 +16,7 @@ export const PermissionProvider: React.FC<{ children: React.ReactNode; user: Use
   const [permissions, setPermissions] = useState<Permission[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const refreshPermissions = async () => {
+  const refreshPermissions = React.useCallback(async () => {
     if (!user) {
       setPermissions([]);
       setLoading(false);
@@ -32,7 +32,7 @@ export const PermissionProvider: React.FC<{ children: React.ReactNode; user: Use
     } finally {
       setLoading(false);
     }
-  };
+  }, [user?.id]);
 
   useEffect(() => {
     refreshPermissions();

@@ -30,7 +30,14 @@ import { SyncProvider } from './src/context/SyncContext';
 const AppContent: React.FC<{ user: User | null, setUser: (u: User | null) => void }> = ({ user, setUser }) => {
   const [activeScreen, setActiveScreen] = React.useState('dashboard');
   const [showRegister, setShowRegister] = React.useState(false);
-  const { hasPermission, loading } = usePermissions();
+  const { hasPermission, loading, refreshPermissions } = usePermissions();
+
+  // Refresh permissions on every screen change to ensure real-time enforcement
+  React.useEffect(() => {
+    if (user) {
+      refreshPermissions();
+    }
+  }, [activeScreen, user?.id]);
 
   const handleLogout = async () => {
     await authService.logout();
