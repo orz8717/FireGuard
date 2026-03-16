@@ -24,7 +24,8 @@ const PlaceholderPage = ({ title }: { title: string }) => (
   </div>
 );
 
-import { PermissionProvider, usePermissions } from './context/PermissionContext';
+import { PermissionProvider, usePermissions } from './src/context/PermissionContext';
+import { SyncProvider } from './src/context/SyncContext';
 
 const AppContent: React.FC<{ user: User | null, setUser: (u: User | null) => void }> = ({ user, setUser }) => {
   const [activeScreen, setActiveScreen] = React.useState('dashboard');
@@ -136,9 +137,11 @@ const App: React.FC = () => {
   }, []);
 
   return (
-    <PermissionProvider user={user}>
-      <AppContent user={user} setUser={setUser} />
-    </PermissionProvider>
+    <SyncProvider>
+      <PermissionProvider user={user}>
+        <AppContent user={user} setUser={setUser} />
+      </PermissionProvider>
+    </SyncProvider>
   );
 };
 

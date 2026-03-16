@@ -4,69 +4,16 @@ import { Inspection, InspectionType, InspectionStatus, Customer, User, UserRole,
 import { dbService } from '../services/dbService';
 import { nestChildRecords } from '../utils/dataUtils';
 import { supabase } from '../services/supabaseClient';
-import { Plus, Search, Eye, Edit2, Loader2, ClipboardList, Clock, Trash2, Zap, Building, CreditCard, Fingerprint, Calendar, CheckCircle2 } from 'lucide-react';
+import { Plus, Search, Eye, Edit2, Loader2, ClipboardList, Clock, Trash2, Zap, Building, CreditCard, Fingerprint, Calendar } from 'lucide-react';
 import DynamicForm from '../components/DynamicForm';
-import { useSync } from '../context/SyncContext';
-
-const SyncProgressBar: React.FC = () => {
-  const { progress, isSyncing } = useSync();
-  const [visible, setVisible] = React.useState(false);
-  const [completed, setCompleted] = React.useState(false);
-
-  React.useEffect(() => {
-    if (isSyncing) {
-      setVisible(true);
-      setCompleted(false);
-    } else if (progress === 100) {
-      setCompleted(true);
-      const timer = setTimeout(() => {
-        setVisible(false);
-      }, 5000);
-      return () => clearTimeout(timer);
-    }
-  }, [isSyncing, progress]);
-
-  if (!visible && !completed) return null;
-
-  // Small indicator after auto-hide to save space but keep status visible
-  if (!visible && completed) return (
-    <div className="flex items-center gap-1 text-emerald-600 animate-in fade-in duration-500 px-2">
-      <CheckCircle2 size={16} />
-      <span className="text-[10px] font-black">מסונכרן</span>
-    </div>
-  );
-
-  return (
-    <div className={`relative flex items-center justify-center px-4 md:px-6 min-h-[44px] min-w-[160px] rounded-2xl font-black text-xs md:text-sm overflow-hidden transition-all duration-500 bg-slate-100 border border-slate-200 shadow-sm ${!visible ? 'opacity-0 scale-95' : 'opacity-100 scale-100'}`}>
-      {/* Progress Fill - fills from right to left because of RTL/Hebrew context or just standard right-aligned */}
-      <div 
-        className={`absolute top-0 right-0 h-full transition-all duration-700 ease-out ${completed ? "bg-emerald-100" : "bg-blue-100"}`}
-        style={{ width: `${progress}%` }}
-      />
-      
-      {/* Text Content */}
-      <div className={`relative z-10 flex items-center gap-2 whitespace-nowrap ${completed ? "text-emerald-700" : "text-blue-700"}`}>
-        {completed ? (
-          <>
-            <CheckCircle2 size={16} className="shrink-0" />
-            <span>הנתונים מסונכרנים (100%)</span>
-          </>
-        ) : (
-          <>
-            <Loader2 className="animate-spin shrink-0" size={16} />
-            <span>טוען נתונים: {progress}%</span>
-          </>
-        )}
-      </div>
-    </div>
-  );
-};
+import { useSync } from '../src/context/SyncContext';
 
 interface InspectionsProps {
   user: User;
 }
 
 const Inspections: React.FC<InspectionsProps> = ({ user }) => {
+  const { syncData, isSyncing } = useSync();
   const [loading, setLoading] = React.useState(true);
   const [inspections, setInspections] = React.useState<Inspection[]>([]);
   const [customers, setCustomers] = React.useState<Customer[]>([]);
@@ -112,19 +59,22 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
 
   const fetchDynamicSchema = async (parentTable?: string, childTable?: string) => {
     try {
-      const dtd = await dbService.syncData(user.name, parentTable, childTable);
+      const dtd = await syncData(user.name, parentTable, childTable);
       setDynamicTableData(dtd);
     } catch (e) { }
   };
 
   const loadDrafts = async () => {
     try {
-      const data = await dbService.getInspectionDrafts(user.id);
+      const { data, error } = await supabase
+        .from('inspection_drafts')
+        .select('*')
+        .eq('user_id', user.id);
         
       let supabaseDrafts: any[] = [];
-      if (data) {
+      if (!error && data) {
         supabaseDrafts = data.map(d => ({
-          id: d.id || d.ROWID, // Supabase UUID or local ROWID
+          id: d.id, // Supabase UUID
           templateId: d.table_name,
           templateName: d.data?.templateName || 'טיוטה',
           customerName: d.data?.customerName || 'לקוח לא ידוע',
@@ -203,29 +153,30 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
     // Check Supabase drafts in state
     draft = drafts.find(d => d.id === draftId);
     
-    // If not found in state, fetch from dbService
+    // If not found in state, fetch from Supabase directly
     if (!draft) {
       try {
-        const allDrafts = await dbService.getInspectionDrafts(user.id);
+        let query = supabase.from('inspection_drafts').select('*').eq('user_id', user.id);
         
-        let data = null;
         if (draftId.startsWith('insp_')) {
           // Extract template ID from insp_TEMPLATEID_TIMESTAMP
           const parts = draftId.split('_');
           if (parts.length >= 2) {
             const templateId = parts[1];
-            data = allDrafts.find(d => d.table_name === templateId);
+            query = query.eq('table_name', templateId);
           } else {
             return; // Invalid ID format
           }
         } else {
-          // Assume it's a UUID or ROWID
-          data = allDrafts.find(d => d.id === draftId || d.ROWID === draftId);
+          // Assume it's a UUID
+          query = query.eq('id', draftId);
         }
 
+        const { data } = await query.maybeSingle();
+          
         if (data) {
           draft = {
-            id: data.id || data.ROWID,
+            id: data.id,
             templateId: data.table_name,
             templateName: data.data?.templateName || 'טיוטה',
             customerName: data.data?.customerName || 'לקוח לא ידוע',
@@ -236,7 +187,7 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
           };
         }
       } catch (e) {
-        console.error('Error fetching draft:', e);
+        console.error('Error fetching draft from Supabase:', e);
       }
     }
 
@@ -422,21 +373,18 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
       
       setPendingChildRecords(updatedPending);
 
-      // TASK: Update the parent draft immediately so child data isn't lost on reload
+      // TASK: Update the parent draft in Supabase immediately so child data isn't lost on reload
       const returnDraftId = localStorage.getItem('returnToDraftId');
       if (returnDraftId) {
         try {
-          const allDrafts = await dbService.getInspectionDrafts(user.id);
-          const draft = allDrafts.find(d => d.id === returnDraftId || d.ROWID === returnDraftId);
+          const { data: draft } = await supabase.from('inspection_drafts').select('data').eq('id', returnDraftId).single();
           if (draft) {
-            await dbService.saveInspectionDraft({
-              ...draft,
+            await supabase.from('inspection_drafts').update({
               data: {
                 ...draft.data,
                 pendingChildRecords: updatedPending
-              },
-              updated_at: new Date().toISOString()
-            });
+              }
+            }).eq('id', returnDraftId);
           }
         } catch (e) {
           console.error('[Draft Sync] Failed to update parent draft with child data:', e);
@@ -707,8 +655,7 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
           <Search className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
           <input type="text" placeholder="חיפוש ביקורת..." className="w-full pr-12 pl-4 py-3 bg-slate-50 border rounded-2xl outline-none focus:ring-2 focus:ring-blue-500 font-bold min-h-[44px]" />
         </div>
-        <div className="flex flex-wrap gap-3 w-full md:w-auto items-center">
-          <SyncProgressBar />
+        <div className="flex flex-wrap gap-3 w-full md:w-auto">
           {availableTemplates.length > 0 ? (
             <div className="flex flex-wrap gap-2 w-full md:w-auto">
               {availableTemplates.filter(t => t.navigation_config?.showAsButton).map(t => (
@@ -766,10 +713,12 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
                    <div className="flex justify-between items-start mb-4 relative z-10">
                      <span className="text-[10px] font-black uppercase text-orange-600 bg-orange-50 px-2 py-1 rounded-lg">טיוטה פעילה</span>
                      <button onClick={async () => { 
-                       try {
-                         await dbService.deleteInspectionDraft(draft.id);
-                         loadDrafts();
-                       } catch (e) { console.error('Error deleting draft', e); }
+                       if (draft.isSupabase) {
+                         try {
+                           await supabase.from('inspection_drafts').delete().eq('id', draft.id);
+                           loadDrafts();
+                         } catch (e) { console.error('Error deleting draft', e); }
+                       }
                      }} className="text-slate-300 hover:text-red-600 transition-all"><Trash2 size={18} /></button>
                    </div>
                    <h4 className="text-lg font-black text-slate-800 mb-2 truncate relative z-10">{draft.templateName}</h4>

@@ -18,7 +18,7 @@ import {
   Info
 } from 'lucide-react';
 import { User, UserRole } from '../types';
-import { usePermissions } from '../context/PermissionContext';
+import { usePermissions } from '../src/context/PermissionContext';
 
 interface LayoutProps {
   children: React.ReactNode;

@@ -1,7 +1,7 @@
 
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { Permission, User, UserRole } from '../types';
-import { dbService } from '../services/dbService';
+import { Permission, User, UserRole } from '../../types';
+import { dbService } from '../../services/dbService';
 
 interface PermissionContextType {
   permissions: Permission[];
