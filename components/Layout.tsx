@@ -48,7 +48,6 @@ const Layout: React.FC<LayoutProps> = ({ children, user, onLogout, activeScreen,
   ];
 
   const visibleMenuItems = menuItems.filter(item => {
-    if (item.id === 'dashboard') return true; // Dashboard is always visible
     if (item.id === 'import_flow') return hasPermission('import', 'canView');
     return hasPermission(item.screenKey, 'canView');
   });

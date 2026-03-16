@@ -63,6 +63,18 @@ const AppContent: React.FC<{ user: User | null, setUser: (u: User | null) => voi
   const renderContent = () => {
     switch (activeScreen) {
       case 'dashboard':
+        if (!hasPermission('dashboard', 'canView')) {
+          // If no dashboard permission, try to find the first available screen
+          const firstAvailable = [
+            'customers', 'inspections', 'certificates', 'users', 'form_builder', 
+            'diagnostics', 'import', 'db_manager', 'audit_logs', 'triggers'
+          ].find(s => hasPermission(s, 'canView'));
+          
+          if (firstAvailable && firstAvailable !== activeScreen) {
+            setActiveScreen(firstAvailable);
+            return null; // Will re-render with new screen
+          }
+        }
         return <Dashboard user={user} />;
       case 'inspections':
         if (!hasPermission('inspections', 'canView')) return <Dashboard user={user} />;
