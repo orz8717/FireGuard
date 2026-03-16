@@ -3,7 +3,7 @@ import React from 'react';
 import { User, UserRole, Permission } from '../types';
 import { dbService } from '../services/dbService';
 import { authService } from '../services/authService';
-import { Shield, UserPlus, Search, Edit2, Check, X, Loader2, Key, Lock } from 'lucide-react';
+import { Shield, UserPlus, Search, Edit2, Check, X, Loader2, Key, Lock, Eye, EyeOff } from 'lucide-react';
 import { DatabaseFixModal } from '../components/DatabaseFixModal';
 
 interface UsersProps {
@@ -16,6 +16,7 @@ const Users: React.FC<UsersProps> = ({ onNavigateToSignup }) => {
   const [editingUser, setEditingUser] = React.useState<User | null>(null);
   const [permissions, setPermissions] = React.useState<Permission[]>([]);
   const [newPassword, setNewPassword] = React.useState('');
+  const [showPassword, setShowPassword] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
   const [searchTerm, setSearchTerm] = React.useState('');
   const [dbError, setDbError] = React.useState<string | null>(null);
@@ -49,6 +50,8 @@ const Users: React.FC<UsersProps> = ({ onNavigateToSignup }) => {
 
   const handleEditPermissions = async (user: User) => {
     setEditingUser(user);
+    setNewPassword('');
+    setShowPassword(false);
     const userPerms = await dbService.getPermissions(user.id);
     // Initialize default perms for screens not present
     const fullPerms = screens.map(s => {
@@ -75,12 +78,38 @@ const Users: React.FC<UsersProps> = ({ onNavigateToSignup }) => {
       await dbService.savePermissions(editingUser.id, permissions);
       
       const updatePayload: Partial<User> = { 
+        name: editingUser.name,
+        email: editingUser.email,
         role: editingUser.role, 
         isActive: editingUser.isActive,
         phone: editingUser.phone
       };
 
       await dbService.updateUser(editingUser.id, updatePayload);
+      
+      // Update password if provided
+      if (newPassword.trim()) {
+        if (newPassword.length < 6) {
+          alert('הסיסמא חייבת להיות לפחות 6 תווים');
+          setSaving(false);
+          return;
+        }
+        const { error: pwdError } = await authService.updateUserPassword(editingUser.id, newPassword);
+        if (pwdError) {
+          console.error('Password update error:', pwdError);
+          alert('שגיאה בעדכון הסיסמא: ' + (pwdError.message || pwdError));
+        } else {
+          // Log password change
+          const currentUser = authService.getCurrentUser();
+          if (currentUser) {
+            await dbService.logActivity(
+              currentUser.name,
+              'UPDATE_PASSWORD',
+              `שונתה סיסמא עבור המשתמש: ${editingUser.name}`
+            );
+          }
+        }
+      }
       
       // Log activity
       const currentUser = authService.getCurrentUser();
@@ -94,8 +123,9 @@ const Users: React.FC<UsersProps> = ({ onNavigateToSignup }) => {
       
       setEditingUser(null);
       await loadUsers();
-    } catch (err) {
-      alert('שגיאה בשמירת נתונים');
+    } catch (err: any) {
+      console.error('Save error:', err);
+      alert('שגיאה בשמירת נתונים: ' + (err.message || err));
     } finally {
       setSaving(false);
     }
@@ -276,6 +306,29 @@ const Users: React.FC<UsersProps> = ({ onNavigateToSignup }) => {
                     />
                     משתמש פעיל במערכת
                   </label>
+                </div>
+
+                <div className="bg-amber-50 p-4 rounded-xl border border-amber-100">
+                  <label className="block text-sm font-bold text-gray-700 mb-2 flex items-center gap-2">
+                    <Lock size={16} className="text-amber-600" /> סיסמא חדשה
+                  </label>
+                  <div className="relative">
+                    <input 
+                      type={showPassword ? "text" : "password"}
+                      placeholder="השאר ריק כדי לא לשנות"
+                      value={newPassword}
+                      onChange={(e) => setNewPassword(e.target.value)}
+                      className="w-full p-2 border rounded-lg outline-none bg-white focus:ring-2 focus:ring-amber-500 pr-10 pl-10"
+                    />
+                    <Key className="absolute right-3 top-2.5 text-amber-400" size={18} />
+                    <button
+                      type="button"
+                      onClick={() => setShowPassword(!showPassword)}
+                      className="absolute left-3 top-2.5 text-gray-400 hover:text-amber-600 transition-colors"
+                    >
+                      {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                    </button>
+                  </div>
                 </div>
               </div>
 

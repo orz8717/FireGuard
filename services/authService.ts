@@ -125,6 +125,18 @@ class AuthService {
     }
   }
 
+  async updateUserPassword(userId: string, newPassword: string): Promise<{ data: any; error: any }> {
+    try {
+      const { data, error } = await supabaseAdmin.auth.admin.updateUserById(userId, {
+        password: newPassword
+      });
+      return { data, error };
+    } catch (error: any) {
+      console.error('Update password error:', error);
+      return { data: null, error: error.message || 'Failed to update password' };
+    }
+  }
+
   async logout() {
     await supabase.auth.signOut();
     this.currentUser = null;

@@ -320,10 +320,17 @@ class DBService {
       payload.is_active = updates.isActive;
       delete payload.isActive;
     }
-    delete payload.password; // Ensure password is not sent to public.users
+    delete payload.password; 
     
     try {
-      return await this.saveToTable('users', { ...payload, id, updated_at: new Date().toISOString() });
+      const { data, error } = await supabaseAdmin
+        .from('users')
+        .update({ ...payload, updated_at: new Date().toISOString() })
+        .eq('id', id)
+        .select();
+
+      if (error) throw error;
+      return data?.[0];
     } catch (error: any) {
       if (error.code === '42501') {
         window.location.href = '/';
@@ -435,6 +442,13 @@ class DBService {
   }
 
   async savePermissions(userId: string, permissions: Partial<Permission>[]) {
+    // First delete existing permissions for this user to avoid conflicts
+    const { error: deleteError } = await supabaseAdmin.from('permissions').delete().eq('user_id', userId);
+    if (deleteError) {
+      console.error('Error deleting old permissions:', deleteError);
+      throw deleteError;
+    }
+
     const payload = permissions.map(p => ({
       user_id: userId,
       screen_key: p.screenKey,
@@ -447,8 +461,12 @@ class DBService {
       can_generate_certificates: p.canGenerateCertificates,
       can_import_excel: p.canImportExcel
     }));
-    const { data, error } = await supabase.from('permissions').upsert(payload, { onConflict: 'user_id, screen_key' }).select();
-    if (error) throw error;
+    
+    const { data, error } = await supabaseAdmin.from('permissions').insert(payload).select();
+    if (error) {
+      console.error('Error inserting new permissions:', error);
+      throw error;
+    }
     if (!data || data.length === 0) throw new Error('Data sync failed for table: permissions');
     return data;
   }

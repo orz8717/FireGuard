@@ -1,6 +1,7 @@
 import React from 'react';
 import { FormTemplate, FieldType, FormField, User } from '../types';
 import { supabase, supabaseAdmin } from '../services/supabaseClient';
+import { dbService } from '../services/dbService';
 import { useFormulaEngine } from '../hooks/useFormulaEngine';
 import { useDraftManager } from '../hooks/useDraftManager';
 import { 
@@ -80,64 +81,31 @@ const EnumSelector: React.FC<{
         try {
           let actualColumn = fieldOpts.sourceColumn;
           
-          // 1. Handle naming mismatches (Case sensitivity, spaces vs underscores, missing spaces)
-          try {
+          // 1. Try to get data from dbService (offline-first)
+          const allData = await dbService.getRawTableData(fieldOpts.sourceTable);
+          
+          if (allData && allData.length > 0) {
+            // Determine the actual column name from the data if possible
             const normalize = (s: string) => s.toLowerCase().replace(/[\s_]/g, '');
             const targetNorm = normalize(fieldOpts.sourceColumn);
+            const firstRow = allData[0];
+            const keys = Object.keys(firstRow);
+            const match = keys.find(k => k === fieldOpts.sourceColumn) || 
+                          keys.find(k => normalize(k) === targetNorm);
+            if (match) actualColumn = match;
 
-            // Try RPC first (more reliable for schema)
-            const { data: cols } = await supabaseAdmin.rpc('get_table_columns', { p_table_name: fieldOpts.sourceTable });
-            
-            if (cols && cols.length > 0) {
-              // Prefer exact match, then normalized match
-              const match = cols.find((c: any) => c.column_name === fieldOpts.sourceColumn) || 
-                            cols.find((c: any) => normalize(c.column_name) === targetNorm);
-              if (match) actualColumn = match.column_name;
-            } else {
-              // Fallback to sample row
-              const { data: sample } = await supabaseAdmin.from(fieldOpts.sourceTable).select('*').limit(1);
-              if (sample && sample.length > 0) {
-                const keys = Object.keys(sample[0]);
-                const match = keys.find(k => k === fieldOpts.sourceColumn) || 
-                              keys.find(k => normalize(k) === targetNorm);
-                if (match) actualColumn = match;
-              }
-            }
-          } catch (err) {
-            console.warn("[EnumSelector] Pre-flight check failed:", err);
-          }
-
-          let allData: any[] = [];
-          let from = 0;
-          const step = 1000;
-          let finished = false;
-
-          while (!finished) {
-            // Use double quotes to handle spaces and special characters in column names
-            const { data, error: fetchError } = await supabaseAdmin
-              .from(fieldOpts.sourceTable)
-              .select(`"${actualColumn.replace(/"/g, '""')}"`)
-              .range(from, from + step - 1);
+            const unique = Array.from(new Set(allData.map(r => r[actualColumn])))
+              .filter(v => v !== null && v !== undefined && v !== '')
+              .map(v => ({ value: String(v), label: String(v) }))
+              .sort((a, b) => a.label.localeCompare(b.label, 'he'));
               
-            if (fetchError) throw fetchError;
-            if (data && data.length > 0) {
-              allData = [...allData, ...data];
-              if (data.length < step) finished = true;
-              else from += step;
-            } else {
-              finished = true;
-            }
+            setOptions(unique);
+          } else {
+            setOptions([]);
           }
-          
-          const unique = Array.from(new Set(allData.map(r => r[actualColumn])))
-            .filter(v => v !== null && v !== undefined && v !== '')
-            .map(v => ({ value: String(v), label: String(v) }))
-            .sort((a, b) => a.label.localeCompare(b.label, 'he'));
-            
-          setOptions(unique);
         } catch (e: any) {
           console.error("Error fetching options:", e);
-          setError(`Error fetching from ${fieldOpts.sourceTable}: ${e.message || 'Unknown error'}`);
+          // Silently fail if we have no data but don't crash the UI
           setOptions([]);
         } finally {
           setLoading(false);
@@ -455,15 +423,8 @@ const DynamicForm: React.FC<DynamicFormProps> = ({
     if (!rowId) return;
     setLoadingChildren(true);
     try {
-      const { data, error } = await supabase
-        .from('inspections')
-        .select('*')
-        .filter('data->>ROWID', 'eq', rowId)
-        .order('created_at', { ascending: false });
-      
-      if (!error && data) {
-        setChildRecords(data);
-      }
+      const data = await dbService.getChildInspections(rowId);
+      setChildRecords(data);
     } catch (err) {
       console.error("Error fetching child records:", err);
     } finally {
@@ -540,31 +501,14 @@ const DynamicForm: React.FC<DynamicFormProps> = ({
           });
         }
 
-        // 2. Fetch the full Parent Record from Supabase
+        // 2. Fetch the full Parent Record from DB (Offline-First)
         try {
-          // Try fetching by ROWID (friendly ID) first
-          let { data, error } = await supabase
-            .from('inspections')
-            .select('data')
-            .filter('data->>ROWID', 'eq', parentRowId)
-            .maybeSingle();
-
-          // If not found, and it looks like a UUID, try fetching by ID
-          if (!data && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(parentRowId)) {
-             const res = await supabase
-                .from('inspections')
-                .select('data')
-                .eq('id', parentRowId)
-                .maybeSingle();
-             data = res.data;
-             error = res.error;
-          }
-            
-          if (data && data.data) {
-            setParentRecord(data.data);
-          } else {
+          const data = await dbService.getInspectionByRowId(parentRowId);
+          if (data) {
+            setParentRecord(data);
           }
         } catch (err) {
+          console.error("Error fetching parent data:", err);
         } finally {
           setLoadingParent(false);
         }

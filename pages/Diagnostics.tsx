@@ -27,6 +27,8 @@ const Diagnostics: React.FC = () => {
   const [scanning, setScanning] = React.useState(false);
   const [expandedError, setExpandedError] = React.useState<number | null>(null);
   
+  const [fixing, setFixing] = React.useState<string | null>(null);
+  
   const [results, setResults] = React.useState<{
     templatesCount: number;
     totalFields: number;
@@ -42,6 +44,23 @@ const Diagnostics: React.FC = () => {
     webhookStatus: { ok: false, status: 'Not Checked' },
     formulaErrors: []
   });
+
+  const handleFix = async (table: string, type: 'PARENT' | 'CHILD') => {
+    setFixing(table);
+    try {
+      if (type === 'PARENT') {
+        await dbService.fixTableAtomicSchema(table);
+      } else {
+        await dbService.fixChildTableSchema(table);
+      }
+      // Refresh after fix
+      await runHealthCheck();
+    } catch (err: any) {
+      alert(`תיקון נכשל: ${err.message}`);
+    } finally {
+      setFixing(null);
+    }
+  };
 
   const runHealthCheck = async () => {
     setScanning(true);
@@ -241,7 +260,17 @@ const Diagnostics: React.FC = () => {
                     <div className={`w-2 h-2 rounded-full ${res.errors.length > 0 ? 'bg-red-500 animate-pulse' : 'bg-green-500'}`} />
                     <span className="font-black text-slate-800">{res.table}</span>
                   </div>
-                  <div className="flex gap-1">
+                  <div className="flex gap-2">
+                    {res.errors.length > 0 && (
+                      <button 
+                        onClick={() => handleFix(res.table, res.isParent ? 'PARENT' : 'CHILD')}
+                        disabled={fixing === res.table}
+                        className="text-[10px] font-black bg-green-600 text-white px-2 py-1 rounded-lg hover:bg-green-700 transition-all flex items-center gap-1 disabled:opacity-50"
+                      >
+                        {fixing === res.table ? <Loader2 className="animate-spin" size={10}/> : <Zap size={10}/>}
+                        תקן אוטומטית
+                      </button>
+                    )}
                     {res.isParent && <span className="text-[9px] font-black bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded uppercase">Parent</span>}
                     {res.isChild && <span className="text-[9px] font-black bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded uppercase">Child</span>}
                   </div>

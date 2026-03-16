@@ -2,6 +2,7 @@
 import React from 'react';
 import { Inspection, InspectionType, InspectionStatus, Customer, User, UserRole, FormTemplate, FieldType } from '../types';
 import { dbService } from '../services/dbService';
+import { offlineService } from '../services/offlineService';
 import { supabase } from '../services/supabaseClient';
 import { Plus, Search, Eye, Edit2, Loader2, ClipboardList, Clock, Trash2, Zap, Building, CreditCard, Fingerprint, FileCheck } from 'lucide-react';
 import DynamicForm from '../components/DynamicForm';
@@ -59,30 +60,25 @@ const Certificates: React.FC<CertificatesProps> = ({ user }) => {
 
   const loadDrafts = async () => {
     try {
-      const { data, error } = await supabase
-        .from('inspection_drafts')
-        .select('*')
-        .eq('user_id', user.id);
+      const data = await dbService.getInspectionDrafts(user.id);
         
-      let supabaseDrafts: any[] = [];
-      if (!error && data) {
-        supabaseDrafts = data.map(d => ({
-          id: d.id,
-          templateId: d.table_name,
-          templateName: d.data?.templateName || 'טיוטה',
-          customerName: d.data?.customerName || 'לקוח לא ידוע',
-          data: d.data,
-          updatedAt: d.last_updated || d.updated_at || new Date().toISOString(),
-          editingInspectionId: d.data?.editingInspectionId || null,
-          isSupabase: true
-        }));
+      let allDrafts: any[] = [];
+      if (data) {
+        allDrafts = data
+          .map(d => ({
+            id: d.id || d.ROWID, // Supabase UUID or local ROWID
+            templateId: d.table_name,
+            templateName: d.data?.templateName || 'טיוטה',
+            customerName: d.data?.customerName || 'לקוח לא ידוע',
+            data: d.data,
+            updatedAt: d.last_updated || d.updated_at || new Date().toISOString(),
+            editingInspectionId: d.data?.editingInspectionId || null,
+            isSupabase: true
+          }))
+          .filter((d: any) => d.templateName?.includes('אישור') || d.templateId?.includes('CERT'))
+          .sort((a: any, b: any) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
       }
 
-      // Only use Supabase drafts to prevent duplicates
-      const allDrafts = supabaseDrafts
-        .filter((d: any) => d.templateName?.startsWith('אישור'))
-        .sort((a: any, b: any) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-        
       setDrafts(allDrafts);
     } catch (err) {
       console.error('Error loading drafts:', err);
@@ -127,25 +123,24 @@ const Certificates: React.FC<CertificatesProps> = ({ user }) => {
     
     if (!draft) {
       try {
-        let query = supabase.from('inspection_drafts').select('*').eq('user_id', user.id);
+        const allDrafts = await dbService.getInspectionDrafts(user.id);
         
+        let data = null;
         if (draftId.startsWith('insp_')) {
           const parts = draftId.split('_');
           if (parts.length >= 2) {
             const templateId = parts[1];
-            query = query.eq('table_name', templateId);
+            data = allDrafts.find(d => d.table_name === templateId);
           } else {
             return;
           }
         } else {
-          query = query.eq('id', draftId);
+          data = allDrafts.find(d => d.id === draftId || d.ROWID === draftId);
         }
 
-        const { data } = await query.maybeSingle();
-          
         if (data) {
           draft = {
-            id: data.id,
+            id: data.id || data.ROWID,
             templateId: data.table_name,
             templateName: data.data?.templateName || 'טיוטה',
             customerName: data.data?.customerName || 'לקוח לא ידוע',
@@ -156,7 +151,7 @@ const Certificates: React.FC<CertificatesProps> = ({ user }) => {
           };
         }
       } catch (e) {
-        console.error('Error fetching draft from Supabase:', e);
+        console.error('Error fetching draft:', e);
       }
     }
 
@@ -409,12 +404,10 @@ const Certificates: React.FC<CertificatesProps> = ({ user }) => {
                    <div className="flex justify-between items-start mb-4 relative z-10">
                      <span className="text-[10px] font-black uppercase text-orange-600 bg-orange-50 px-2 py-1 rounded-lg">טיוטה פעילה</span>
                      <button onClick={async () => { 
-                       if (draft.isSupabase) {
-                         try {
-                           await supabase.from('inspection_drafts').delete().eq('id', draft.id);
-                           loadDrafts();
-                         } catch (e) { console.error('Error deleting draft', e); }
-                       }
+                       try {
+                         await dbService.deleteInspectionDraft(draft.id);
+                         loadDrafts();
+                       } catch (e) { console.error('Error deleting draft', e); }
                      }} className="text-slate-300 hover:text-red-600 transition-all"><Trash2 size={18} /></button>
                    </div>
                    <h4 className="text-lg font-black text-slate-800 mb-2 truncate relative z-10">{draft.templateName}</h4>

@@ -6,6 +6,8 @@ import Login from './pages/Login';
 import Register from './pages/Register';
 import Layout from './components/Layout';
 import Dashboard from './pages/Dashboard';
+import { dbService } from './services/dbService';
+import { offlineService } from './services/offlineService';
 import Inspections from './pages/Inspections';
 import Users from './pages/Users';
 import FormBuilder from './pages/FormBuilder';
@@ -24,21 +26,47 @@ const PlaceholderPage = ({ title }: { title: string }) => (
   </div>
 );
 
-const App: React.FC = () => {
+import { SyncProvider, useSync } from './context/SyncContext';
+
+const AppContent: React.FC = () => {
   const [user, setUser] = React.useState<User | null>(authService.getCurrentUser());
   const [activeScreen, setActiveScreen] = React.useState('dashboard');
   const [showRegister, setShowRegister] = React.useState(false);
+  const { startSync } = useSync();
 
   // Listen for auth changes to update UI when session expires or refresh fails
   React.useEffect(() => {
     const { data: { subscription } } = authService.onAuthStateChange((event, session) => {
-      if (event === 'SIGNED_OUT' || (event === 'TOKEN_REFRESHED' && !session)) {
+      if (event === 'SIGNED_OUT' || (event === 'TOKEN_REFRESHED' && !session) || (event === 'INITIAL_SESSION' && !session)) {
         setUser(null);
+      }
+    });
+
+    // Handle Online/Offline Sync
+    const handleOnline = () => {
+      console.log('App is online, processing outbox and hydrating data...');
+      dbService.processOutbox();
+      startSync();
+    };
+
+    window.addEventListener('online', handleOnline);
+
+    // Initial check
+    if (navigator.onLine) {
+      dbService.processOutbox();
+      startSync();
+    }
+
+    // Storage Estimate Check
+    offlineService.getStorageEstimate().then(estimate => {
+      if (estimate) {
+        console.log(`Storage usage: ${Math.round(estimate.usage! / 1024 / 1024)}MB / ${Math.round(estimate.quota! / 1024 / 1024)}MB`);
       }
     });
 
     return () => {
       subscription.unsubscribe();
+      window.removeEventListener('online', handleOnline);
     };
   }, []);
 
@@ -117,6 +145,14 @@ const App: React.FC = () => {
     >
       {renderContent()}
     </Layout>
+  );
+};
+
+const App: React.FC = () => {
+  return (
+    <SyncProvider>
+      <AppContent />
+    </SyncProvider>
   );
 };
 
