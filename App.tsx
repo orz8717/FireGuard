@@ -6,8 +6,6 @@ import Login from './pages/Login';
 import Register from './pages/Register';
 import Layout from './components/Layout';
 import Dashboard from './pages/Dashboard';
-import { dbService } from './services/dbService';
-import { offlineService } from './services/offlineService';
 import Inspections from './pages/Inspections';
 import Users from './pages/Users';
 import FormBuilder from './pages/FormBuilder';
@@ -26,53 +24,12 @@ const PlaceholderPage = ({ title }: { title: string }) => (
   </div>
 );
 
-import { SyncProvider, useSync } from './context/SyncContext';
+import { PermissionProvider, usePermissions } from './context/PermissionContext';
 
-const AppContent: React.FC = () => {
-  const [user, setUser] = React.useState<User | null>(authService.getCurrentUser());
+const AppContent: React.FC<{ user: User | null, setUser: (u: User | null) => void }> = ({ user, setUser }) => {
   const [activeScreen, setActiveScreen] = React.useState('dashboard');
   const [showRegister, setShowRegister] = React.useState(false);
-  const { startSync } = useSync();
-
-  // Listen for auth changes to update UI when session expires or refresh fails
-  React.useEffect(() => {
-    const { data: { subscription } } = authService.onAuthStateChange((event, session) => {
-      if (event === 'SIGNED_OUT' || (event === 'TOKEN_REFRESHED' && !session) || (event === 'INITIAL_SESSION' && !session)) {
-        setUser(null);
-      }
-    });
-
-    // Handle Online/Offline Sync
-    const handleOnline = () => {
-      console.log('App is online, processing outbox and hydrating data...');
-      dbService.processOutbox();
-      startSync();
-    };
-
-    window.addEventListener('online', handleOnline);
-
-    // Initial check
-    if (navigator.onLine) {
-      dbService.processOutbox();
-      startSync();
-    }
-
-    // Storage Estimate Check
-    offlineService.getStorageEstimate().then(estimate => {
-      if (estimate) {
-        console.log(`Storage usage: ${Math.round(estimate.usage! / 1024 / 1024)}MB / ${Math.round(estimate.quota! / 1024 / 1024)}MB`);
-      }
-    });
-
-    return () => {
-      subscription.unsubscribe();
-      window.removeEventListener('online', handleOnline);
-    };
-  }, []);
-
-  const handleLogin = (u: User) => {
-    setUser(u);
-  };
+  const { hasPermission, loading } = usePermissions();
 
   const handleLogout = async () => {
     await authService.logout();
@@ -88,7 +45,18 @@ const AppContent: React.FC = () => {
         />
       );
     }
-    return <Login onLogin={handleLogin} />;
+    return <Login onLogin={(u) => setUser(u)} />;
+  }
+
+  if (loading) {
+    return (
+      <div className="h-screen w-screen flex items-center justify-center bg-slate-50">
+        <div className="text-center">
+          <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+          <p className="text-slate-600 font-bold">טוען הרשאות...</p>
+        </div>
+      </div>
+    );
   }
 
   const renderContent = () => {
@@ -96,16 +64,19 @@ const AppContent: React.FC = () => {
       case 'dashboard':
         return <Dashboard user={user} />;
       case 'inspections':
+        if (!hasPermission('inspections', 'canView')) return <Dashboard user={user} />;
         return <Inspections user={user} />;
       case 'customers':
+        if (!hasPermission('customers', 'canView')) return <Dashboard user={user} />;
         return <Customers user={user} />;
       case 'certificates':
-        if (user.role !== UserRole.ADMIN && user.role !== UserRole.OFFICE) return <Dashboard user={user} />;
+        if (!hasPermission('certificates', 'canView')) return <Dashboard user={user} />;
         return <Certificates user={user} />;
       case 'users':
-        if (user.role !== UserRole.ADMIN) return <Dashboard user={user} />;
+        if (!hasPermission('users', 'canView')) return <Dashboard user={user} />;
         return <Users onNavigateToSignup={() => setActiveScreen('signup')} />;
       case 'signup':
+        if (!hasPermission('users', 'canCreate')) return <Dashboard user={user} />;
         return (
           <Register 
             onBackToLogin={() => setActiveScreen('users')} 
@@ -114,22 +85,22 @@ const AppContent: React.FC = () => {
           />
         );
       case 'form_builder':
-        if (user.role !== UserRole.ADMIN) return <Dashboard user={user} />;
+        if (!hasPermission('form_builder', 'canView')) return <Dashboard user={user} />;
         return <FormBuilder />;
       case 'diagnostics':
-        if (user.role !== UserRole.ADMIN) return <Dashboard user={user} />;
+        if (!hasPermission('diagnostics', 'canView')) return <Dashboard user={user} />;
         return <Diagnostics />;
       case 'import':
-        if (user.role !== UserRole.ADMIN && user.role !== UserRole.OFFICE) return <Dashboard user={user} />;
+        if (!hasPermission('import', 'canView')) return <Dashboard user={user} />;
         return <ImportExcel />;
       case 'db_manager':
-        if (user.role !== UserRole.ADMIN) return <Dashboard user={user} />;
+        if (!hasPermission('db_manager', 'canView')) return <Dashboard user={user} />;
         return <DbManager />;
       case 'audit_logs':
-        if (user.role !== UserRole.ADMIN) return <Dashboard user={user} />;
+        if (!hasPermission('audit_logs', 'canView')) return <Dashboard user={user} />;
         return <AuditLogs user={user} />;
       case 'triggers':
-        if (user.role !== UserRole.ADMIN && user.role !== UserRole.OFFICE) return <Dashboard user={user} />;
+        if (!hasPermission('triggers', 'canView')) return <Dashboard user={user} />;
         return <TriggersPage user={user} />;
       default:
         return <Dashboard user={user} />;
@@ -149,10 +120,25 @@ const AppContent: React.FC = () => {
 };
 
 const App: React.FC = () => {
+  const [user, setUser] = React.useState<User | null>(authService.getCurrentUser());
+
+  // Listen for auth changes to update UI when session expires or refresh fails
+  React.useEffect(() => {
+    const { data: { subscription } } = authService.onAuthStateChange((event, session) => {
+      if (event === 'SIGNED_OUT' || (event === 'TOKEN_REFRESHED' && !session)) {
+        setUser(null);
+      }
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, []);
+
   return (
-    <SyncProvider>
-      <AppContent />
-    </SyncProvider>
+    <PermissionProvider user={user}>
+      <AppContent user={user} setUser={setUser} />
+    </PermissionProvider>
   );
 };
 

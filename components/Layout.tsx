@@ -18,6 +18,7 @@ import {
   Info
 } from 'lucide-react';
 import { User, UserRole } from '../types';
+import { usePermissions } from '../context/PermissionContext';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -29,23 +30,28 @@ interface LayoutProps {
 
 const Layout: React.FC<LayoutProps> = ({ children, user, onLogout, activeScreen, setActiveScreen }) => {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = React.useState(false);
+  const { hasPermission } = usePermissions();
 
   const menuItems = [
-    { id: 'dashboard', label: 'לוח בקרה', icon: <LayoutDashboard size={20} />, roles: [UserRole.ADMIN, UserRole.USER, UserRole.OFFICE] },
-    { id: 'customers', label: 'לקוחות', icon: <Users size={20} />, roles: [UserRole.ADMIN, UserRole.USER, UserRole.OFFICE] },
-    { id: 'inspections', label: 'ביקורות', icon: <ClipboardCheck size={20} />, roles: [UserRole.ADMIN, UserRole.USER, UserRole.OFFICE] },
-    { id: 'certificates', label: 'אישורים', icon: <FileText size={20} />, roles: [UserRole.ADMIN, UserRole.OFFICE] },
-    { id: 'users', label: 'ניהול משתמשים', icon: <Settings size={20} />, roles: [UserRole.ADMIN] },
-    { id: 'form_builder', label: 'עורך טפסים', icon: <Trello size={20} />, roles: [UserRole.ADMIN] },
-    { id: 'diagnostics', label: 'אבחון ו-QA', icon: <Activity size={20} />, roles: [UserRole.ADMIN] },
-    { id: 'import', label: 'ייבוא נתונים', icon: <Upload size={20} />, roles: [UserRole.ADMIN, UserRole.OFFICE] },
-    { id: 'import_flow', label: 'מדריך ייבוא', icon: <Info size={20} />, roles: [UserRole.ADMIN, UserRole.OFFICE, UserRole.USER] },
-    { id: 'db_manager', label: 'ניהול מסד נתונים', icon: <Database size={20} />, roles: [UserRole.ADMIN] },
-    { id: 'triggers', label: 'תכנות טריגרים', icon: <Zap size={20} />, roles: [UserRole.ADMIN, UserRole.OFFICE] },
-    { id: 'audit_logs', label: 'יומן פעילות', icon: <History size={20} />, roles: [UserRole.ADMIN] },
+    { id: 'dashboard', label: 'לוח בקרה', icon: <LayoutDashboard size={20} />, screenKey: 'dashboard' },
+    { id: 'customers', label: 'לקוחות', icon: <Users size={20} />, screenKey: 'customers' },
+    { id: 'inspections', label: 'ביקורות', icon: <ClipboardCheck size={20} />, screenKey: 'inspections' },
+    { id: 'certificates', label: 'אישורים', icon: <FileText size={20} />, screenKey: 'certificates' },
+    { id: 'users', label: 'ניהול משתמשים', icon: <Settings size={20} />, screenKey: 'users' },
+    { id: 'form_builder', label: 'עורך טפסים', icon: <Trello size={20} />, screenKey: 'form_builder' },
+    { id: 'diagnostics', label: 'אבחון ו-QA', icon: <Activity size={20} />, screenKey: 'diagnostics' },
+    { id: 'import', label: 'ייבוא נתונים', icon: <Upload size={20} />, screenKey: 'import' },
+    { id: 'import_flow', label: 'מדריך ייבוא', icon: <Info size={20} />, screenKey: 'import' },
+    { id: 'db_manager', label: 'ניהול מסד נתונים', icon: <Database size={20} />, screenKey: 'db_manager' },
+    { id: 'triggers', label: 'תכנות טריגרים', icon: <Zap size={20} />, screenKey: 'triggers' },
+    { id: 'audit_logs', label: 'יומן פעילות', icon: <History size={20} />, screenKey: 'audit_logs' },
   ];
 
-  const visibleMenuItems = menuItems.filter(item => item.roles.includes(user.role));
+  const visibleMenuItems = menuItems.filter(item => {
+    if (item.id === 'dashboard') return true; // Dashboard is always visible
+    if (item.id === 'import_flow') return hasPermission('import', 'canView');
+    return hasPermission(item.screenKey, 'canView');
+  });
 
   const handleNavigation = (id: string) => {
     setActiveScreen(id);
