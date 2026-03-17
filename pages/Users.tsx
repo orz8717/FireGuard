@@ -10,6 +10,8 @@ interface UsersProps {
   onNavigateToSignup?: () => void;
 }
 
+import { APP_SCREENS } from '../src/constants/screens';
+
 const Users: React.FC<UsersProps> = ({ onNavigateToSignup }) => {
   const [users, setUsers] = React.useState<User[]>([]);
   const [loading, setLoading] = React.useState(true);
@@ -23,19 +25,15 @@ const Users: React.FC<UsersProps> = ({ onNavigateToSignup }) => {
   const currentUser = authService.getCurrentUser();
   const isAdmin = currentUser?.role === UserRole.ADMIN;
 
-  const screens = [
-    { key: 'dashboard', label: 'לוח בקרה' },
-    { key: 'customers', label: 'לקוחות' },
-    { key: 'inspections', label: 'ביקורות' },
-    { key: 'certificates', label: 'אישורים / תעודות' },
-    { key: 'users', label: 'ניהול משתמשים' },
-    { key: 'form_builder', label: 'עורך טפסים' },
-    { key: 'import', label: 'ייבוא נתונים' },
-    { key: 'db_manager', label: 'ניהול בסיס נתונים' },
-    { key: 'audit_logs', label: 'יומן פעילות' },
-    { key: 'diagnostics', label: 'אבחון מערכת' },
-    { key: 'triggers', label: 'טריגרים' },
-  ];
+  // Filter unique screens by key for the permissions UI
+  const screens = React.useMemo(() => {
+    const uniqueKeys = new Set();
+    return APP_SCREENS.filter(screen => {
+      if (uniqueKeys.has(screen.key)) return false;
+      uniqueKeys.add(screen.key);
+      return true;
+    });
+  }, []);
 
   const loadUsers = async () => {
     setLoading(true);
@@ -68,12 +66,12 @@ const Users: React.FC<UsersProps> = ({ onNavigateToSignup }) => {
       
       // Office has specific screens
       if (isOffice) {
-        const officeScreens = ['dashboard', 'customers', 'inspections', 'certificates', 'import', 'triggers'];
+        const officeScreens = ['dashboard', 'customers', 'inspections', 'certificates', 'import', 'triggers', 'update_tables'];
         if (officeScreens.includes(screenKey)) return true;
       }
       
       // Regular user has basic screens
-      const userScreens = ['dashboard', 'customers', 'inspections'];
+      const userScreens = ['dashboard', 'customers', 'inspections', 'update_tables'];
       if (userScreens.includes(screenKey)) return true;
       
       return false;

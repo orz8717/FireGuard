@@ -71,6 +71,8 @@ const Customers: React.FC<CustomersProps> = ({ user }) => {
   const [importProgress, setImportProgress] = React.useState(0);
   const [currentCustomer, setCurrentCustomer] = React.useState<Partial<Customer>>({});
   const [formState, setFormState] = React.useState<Record<string, string>>({});
+  const [customFields, setCustomFields] = React.useState<Record<string, string>>({});
+  const [newFieldName, setNewFieldName] = React.useState('');
   const [deleteConfirm, setDeleteConfirm] = React.useState<Customer | null>(null);
   const [actionLoading, setActionLoading] = React.useState(false);
   
@@ -170,6 +172,7 @@ const Customers: React.FC<CustomersProps> = ({ user }) => {
     setCurrentCustomer(customer);
     const notes = getParsedNotes(customer.notes);
     const initialForm: Record<string, string> = {};
+    const initialCustom: Record<string, string> = {};
     
     ORDERED_SCHEMA.forEach(field => {
       if (field.type === 'core') {
@@ -178,8 +181,16 @@ const Customers: React.FC<CustomersProps> = ({ user }) => {
         initialForm[field.key] = notes[field.key] || '';
       }
     });
+
+    // Capture any other fields in notes that are not in the schema
+    Object.keys(notes).forEach(key => {
+      if (!ORDERED_SCHEMA.find(s => s.key === key)) {
+        initialCustom[key] = String(notes[key]);
+      }
+    });
     
     setFormState(initialForm);
+    setCustomFields(initialCustom);
     setIsEditing(true);
   };
 
@@ -188,7 +199,7 @@ const Customers: React.FC<CustomersProps> = ({ user }) => {
     setActionLoading(true);
     try {
       const coreData: any = {};
-      const dynamicData: Record<string, string> = {};
+      const dynamicData: Record<string, string> = { ...customFields };
       
       ORDERED_SCHEMA.forEach(field => {
         if (field.type === 'core') {
@@ -211,6 +222,7 @@ const Customers: React.FC<CustomersProps> = ({ user }) => {
         await dbService.addCustomer(payload);
       }
       setIsEditing(false);
+      setCustomFields({});
       await loadCustomers();
     } catch (err) {
       alert('שגיאה בשמירה');
@@ -377,24 +389,114 @@ const Customers: React.FC<CustomersProps> = ({ user }) => {
               <button onClick={() => setIsEditing(false)} className="p-2 hover:bg-slate-200 rounded-full transition-colors"><X size={20}/></button>
             </div>
             <div className="p-6 overflow-y-auto flex-1">
-              <form onSubmit={handleSaveCustomer} className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                 {ORDERED_SCHEMA.filter(f => f.key !== 'ROW ID').map(field => (
-                   <div key={field.key} className="space-y-1">
-                     <label className="text-[10px] font-bold text-slate-500 uppercase px-1">{field.label}</label>
-                     <input 
-                       type="text" 
-                       value={formState[field.key] || ''} 
-                       onChange={(e) => setFormState({...formState, [field.key]: e.target.value})}
-                       className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:border-blue-500 focus:bg-white outline-none font-bold text-sm"
-                     />
-                   </div>
-                 ))}
-                 <div className="md:col-span-2 pt-6 flex justify-end gap-3">
-                   <button type="button" onClick={() => setIsEditing(false)} className="px-6 py-2.5 font-bold text-slate-500">ביטול</button>
-                   <button type="submit" disabled={actionLoading} className="px-10 py-2.5 bg-blue-600 text-white rounded-xl font-bold shadow-lg shadow-blue-100">
-                     {actionLoading ? <Loader2 className="animate-spin"/> : 'שמור'}
-                   </button>
-                 </div>
+              <form onSubmit={handleSaveCustomer} className="space-y-8">
+                {/* Core Fields Section */}
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2 border-b border-slate-100 pb-2">
+                    <Building size={18} className="text-blue-600" />
+                    <h3 className="font-bold text-slate-800">פרטי ליבה</h3>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {ORDERED_SCHEMA.filter(f => f.type === 'core').map(field => (
+                      <div key={field.key} className="space-y-1">
+                        <label className="text-[10px] font-bold text-slate-500 uppercase px-1">{field.label}</label>
+                        <input 
+                          type="text" 
+                          value={formState[field.key] || ''} 
+                          onChange={(e) => setFormState({...formState, [field.key]: e.target.value})}
+                          className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:border-blue-500 focus:bg-white outline-none font-bold text-sm transition-all"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Dynamic Fields Section */}
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2 border-b border-slate-100 pb-2">
+                    <Settings2 size={18} className="text-emerald-600" />
+                    <h3 className="font-bold text-slate-800">נתונים דינמיים</h3>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {ORDERED_SCHEMA.filter(f => f.type === 'dynamic' && f.key !== 'ROW ID').map(field => (
+                      <div key={field.key} className="space-y-1">
+                        <label className="text-[10px] font-bold text-slate-500 uppercase px-1">{field.label}</label>
+                        <input 
+                          type="text" 
+                          value={formState[field.key] || ''} 
+                          onChange={(e) => setFormState({...formState, [field.key]: e.target.value})}
+                          className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:border-blue-500 focus:bg-white outline-none font-bold text-sm transition-all"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Custom Fields Section */}
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                    <div className="flex items-center gap-2">
+                      <Tag size={18} className="text-purple-600" />
+                      <h3 className="font-bold text-slate-800">שדות מותאמים אישית</h3>
+                    </div>
+                  </div>
+                  
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {Object.keys(customFields).map(key => (
+                      <div key={key} className="space-y-1 relative group">
+                        <label className="text-[10px] font-bold text-slate-500 uppercase px-1">{key}</label>
+                        <div className="relative">
+                          <input 
+                            type="text" 
+                            value={customFields[key] || ''} 
+                            onChange={(e) => setCustomFields({...customFields, [key]: e.target.value})}
+                            className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:border-blue-500 focus:bg-white outline-none font-bold text-sm transition-all"
+                          />
+                          <button 
+                            type="button"
+                            onClick={() => {
+                              const next = { ...customFields };
+                              delete next[key];
+                              setCustomFields(next);
+                            }}
+                            className="absolute left-2 top-1/2 -translate-y-1/2 p-1 text-red-400 hover:text-red-600 opacity-0 group-hover:opacity-100 transition-opacity"
+                          >
+                            <X size={14} />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="flex gap-2 pt-2">
+                    <input 
+                      type="text" 
+                      placeholder="שם שדה חדש..."
+                      value={newFieldName}
+                      onChange={(e) => setNewFieldName(e.target.value)}
+                      className="flex-1 p-2 bg-slate-50 border border-dashed border-slate-300 rounded-lg outline-none text-xs font-bold"
+                    />
+                    <button 
+                      type="button"
+                      onClick={() => {
+                        if (newFieldName.trim()) {
+                          setCustomFields({ ...customFields, [newFieldName.trim()]: '' });
+                          setNewFieldName('');
+                        }
+                      }}
+                      className="px-4 py-2 bg-slate-100 text-slate-600 rounded-lg text-xs font-bold hover:bg-slate-200 transition-colors"
+                    >
+                      הוסף שדה
+                    </button>
+                  </div>
+                </div>
+
+                <div className="pt-6 flex justify-end gap-3 border-t border-slate-100">
+                  <button type="button" onClick={() => { setIsEditing(false); setCustomFields({}); setNewFieldName(''); }} className="px-6 py-2.5 font-bold text-slate-500 hover:text-slate-700 transition-colors">ביטול</button>
+                  <button type="submit" disabled={actionLoading} className="px-10 py-2.5 bg-blue-600 text-white rounded-xl font-bold shadow-lg shadow-blue-100 hover:bg-blue-700 transition-all disabled:opacity-50">
+                    {actionLoading ? <Loader2 className="animate-spin"/> : 'שמור שינויים'}
+                  </button>
+                </div>
               </form>
             </div>
           </div>

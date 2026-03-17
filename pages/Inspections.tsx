@@ -73,16 +73,18 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
         
       let supabaseDrafts: any[] = [];
       if (!error && data) {
-        supabaseDrafts = data.map(d => ({
-          id: d.id, // Supabase UUID
-          templateId: d.table_name,
-          templateName: d.data?.templateName || 'טיוטה',
-          customerName: d.data?.customerName || 'לקוח לא ידוע',
-          data: d.data,
-          updatedAt: d.last_updated || d.updated_at || new Date().toISOString(),
-          editingInspectionId: d.data?.editingInspectionId || null,
-          isSupabase: true
-        }));
+        supabaseDrafts = data
+          .map(d => ({
+            id: d.id, // Supabase UUID
+            templateId: d.table_name,
+            templateName: d.data?.templateName || 'טיוטה',
+            customerName: d.data?.customerName || 'לקוח לא ידוע',
+            data: d.data,
+            updatedAt: d.last_updated || d.updated_at || new Date().toISOString(),
+            editingInspectionId: d.data?.editingInspectionId || null,
+            isSupabase: true
+          }))
+          .filter(d => !d.templateName.startsWith('עדכון טבלת'));
       }
 
       // Only use Supabase drafts to prevent duplicates
@@ -671,27 +673,7 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
                   <Plus size={18} /> <span className="truncate">{t.name}</span>
                 </button>
               ))}
-              {availableTemplates.filter(t => !t.navigation_config?.showAsButton).length > 0 && (
-                <select 
-                  onChange={(e) => {
-                    if (!e.target.value) return;
-                    const t = availableTemplates.find(tmp => tmp.id === e.target.value);
-                    if (t) {
-                      const isAnnual = t.formKey.includes('ANNUAL') || t.name.includes('שנתית') || t.name.includes('Annual');
-                      const isSemi = t.formKey.includes('SEMI') || t.name.includes('חצי שנתית');
-                      handleStartNew(isAnnual ? InspectionType.ANNUAL : (isSemi ? InspectionType.SEMI_ANNUAL : InspectionType.OTHER), t.id);
-                    }
-                    e.target.value = "";
-                  }}
-                  className="flex-1 md:flex-none px-4 py-3 bg-slate-100 text-slate-700 rounded-2xl font-black text-xs md:text-sm outline-none border-none min-h-[44px]"
-                  defaultValue=""
-                >
-                  <option value="" disabled>ביקורות נוספות...</option>
-                  {availableTemplates.filter(t => !t.navigation_config?.showAsButton).map(t => (
-                    <option key={t.id} value={t.id}>{t.name}</option>
-                  ))}
-                </select>
-              )}
+              {/* Removed "Additional Inspections" dropdown per user request */}
             </div>
           ) : (
             <div className="flex flex-wrap gap-2 w-full md:w-auto">

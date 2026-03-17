@@ -16,6 +16,7 @@ import ImportExcel from './pages/ImportExcel';
 import Certificates from './pages/Certificates';
 import AuditLogs from './pages/AuditLogs';
 import TriggersPage from './pages/TriggersPage';
+import UpdateTables from './pages/UpdateTables';
 
 const PlaceholderPage = ({ title }: { title: string }) => (
   <div className="bg-white p-8 rounded-xl border shadow-sm animate-in fade-in slide-in-from-bottom-4 duration-500">
@@ -28,6 +29,8 @@ import { PermissionProvider, usePermissions } from './src/context/PermissionCont
 import { SyncProvider } from './src/context/SyncContext';
 
 import { AlertCircle, Loader2 } from 'lucide-react';
+
+import { APP_SCREENS } from './src/constants/screens';
 
 const AppContent: React.FC<{ user: User | null, setUser: (u: User | null) => void }> = ({ user, setUser }) => {
   const [activeScreen, setActiveScreen] = React.useState('dashboard');
@@ -59,20 +62,16 @@ const AppContent: React.FC<{ user: User | null, setUser: (u: User | null) => voi
           setTimeout(() => {
             setPermissionError(null);
             
-            // Find first available screen from fresh data
-            const firstAvailable = [
-              'dashboard', 'customers', 'inspections', 'certificates', 'users', 'form_builder', 
-              'diagnostics', 'import', 'db_manager', 'audit_logs', 'triggers'
-            ].find(s => {
-              if (s === 'dashboard') return true; // Dashboard usually allowed or has its own internal check
-              const p = freshPermissions.find(p => p.screenKey === s);
+            // Find first available screen from fresh data using central config
+            const firstAvailable = APP_SCREENS.find(s => {
+              if (s.key === 'dashboard') return true;
+              const p = freshPermissions.find(p => p.screenKey === s.key);
               return p ? !!p.canView : false;
-            });
+            })?.key;
             
             if (firstAvailable && firstAvailable !== activeScreen) {
               setActiveScreen(firstAvailable);
             } else if (!firstAvailable) {
-              // If absolutely nothing is available, maybe logout or show error
               setActiveScreen('dashboard');
             }
           }, 3000);
@@ -115,11 +114,8 @@ const AppContent: React.FC<{ user: User | null, setUser: (u: User | null) => voi
     switch (activeScreen) {
       case 'dashboard':
         if (!hasPermission('dashboard', 'canView')) {
-          // If no dashboard permission, try to find the first available screen
-          const firstAvailable = [
-            'customers', 'inspections', 'certificates', 'users', 'form_builder', 
-            'diagnostics', 'import', 'db_manager', 'audit_logs', 'triggers'
-          ].find(s => hasPermission(s, 'canView'));
+          // If no dashboard permission, try to find the first available screen from central config
+          const firstAvailable = APP_SCREENS.find(s => hasPermission(s.key, 'canView'))?.key;
           
           if (firstAvailable && firstAvailable !== activeScreen) {
             setActiveScreen(firstAvailable);
@@ -166,6 +162,9 @@ const AppContent: React.FC<{ user: User | null, setUser: (u: User | null) => voi
       case 'triggers':
         if (!hasPermission('triggers', 'canView')) return <Dashboard user={user} />;
         return <TriggersPage user={user} />;
+      case 'update_tables':
+        if (!hasPermission('update_tables', 'canView')) return <Dashboard user={user} />;
+        return <UpdateTables user={user} />;
       default:
         return <Dashboard user={user} />;
     }

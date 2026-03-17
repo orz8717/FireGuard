@@ -586,8 +586,10 @@ const FormBuilder: React.FC = () => {
 
   const handleMirrorSync = async (tableName?: string) => {
     const targetTable = tableName || localTableName;
-    if (!targetTable) {
-      setSyncConfig({ isOpen: true, tables: [], selectedTable: null, diff: null, isLoading: false });
+    if (!targetTable || !selectedTemplateId) {
+      if (!targetTable) {
+        setSyncConfig({ isOpen: true, tables: [], selectedTable: null, diff: null, isLoading: false });
+      }
       return;
     }
 
@@ -595,52 +597,80 @@ const FormBuilder: React.FC = () => {
     try {
       // 1. Schema Fetching: Fetch table schema including ordinal_position
       const dbCols = await dbService.getTableColumns(targetTable);
-      if (!dbCols || dbCols.length === 0) {
+      const virtualCols = await dbService.getVirtualColumns(targetTable);
+      
+      if ((!dbCols || dbCols.length === 0) && virtualCols.length === 0) {
         alert('לא ניתן היה למשוך עמודות מהטבלה הנבחרת.');
         return;
       }
 
       const existingFields = [...localFields];
-      const existingKeys = existingFields.map(f => f.fieldKey.trim());
-      
-      // Identify missing columns (Sanitized)
-      const missingCols = dbCols.filter(c => !existingKeys.includes(c.column_name.trim()));
-      
-      const newFields: FormField[] = missingCols.map((col, idx) => ({
-        id: `temp_sync_${Date.now()}_${idx}`,
-        formTemplateId: selectedTemplateId!,
-        fieldKey: col.column_name.trim(),
-        label: col.column_name.trim(),
-        fieldType: col.data_type.includes('int') || col.data_type.includes('num') ? FieldType.NUMBER : FieldType.TEXT,
-        orderIndex: col.ordinal_position,
-        isRequired: false
-      }));
-
-      const combinedFields = [...existingFields, ...newFields];
-
-      // 2. Strict Mapping & Filtering: Create a new array by iterating over dbCols (Source of Truth)
       const finalFields: FormField[] = [];
-      const dbColumnNames = dbCols.map(c => c.column_name.trim());
-      
-      // First, add fields that exist in the DB in their correct order
+      const processedKeys = new Set<string>();
+
+      // 1. Process Real Columns (Source of Truth for these)
       dbCols.forEach(col => {
-        const matchingField = combinedFields.find(f => f.fieldKey.trim() === col.column_name.trim());
-        if (matchingField) {
+        const key = col.column_name.trim();
+        const existing = existingFields.find(f => f.fieldKey.trim() === key);
+        
+        if (existing) {
           finalFields.push({
-            ...matchingField,
-            orderIndex: col.ordinal_position // Hard Reset of OrderIndex
+            ...existing,
+            orderIndex: col.ordinal_position,
+            isVirtual: false
+          });
+        } else {
+          finalFields.push({
+            id: `temp_field_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+            formTemplateId: selectedTemplateId!,
+            fieldKey: key,
+            label: key,
+            fieldType: col.data_type.includes('int') || col.data_type.includes('num') ? FieldType.NUMBER : FieldType.TEXT,
+            orderIndex: col.ordinal_position,
+            isRequired: false,
+            isVirtual: false
           });
         }
+        processedKeys.add(key);
       });
 
-      // Second, add fields that exist in the app but NOT in the DB (like LINK_BUTTONs) at the end
-      const nonDbFields = combinedFields.filter(f => !dbColumnNames.includes(f.fieldKey.trim()));
-      const maxDbOrder = Math.max(...dbCols.map(c => c.ordinal_position), 0);
-      
-      nonDbFields.forEach((f, idx) => {
+      // 2. Process Virtual Columns
+      virtualCols.forEach((vCol, idx) => {
+        const key = vCol.trim();
+        if (processedKeys.has(key)) return; // Already processed as real column
+
+        const existing = existingFields.find(f => f.fieldKey.trim() === key);
+        const order = dbCols.length + idx + 1;
+
+        if (existing) {
+          finalFields.push({
+            ...existing,
+            orderIndex: order,
+            isVirtual: true
+          });
+        } else {
+          finalFields.push({
+            id: `temp_vfield_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+            formTemplateId: selectedTemplateId!,
+            fieldKey: key,
+            label: key,
+            fieldType: FieldType.TEXT,
+            orderIndex: order,
+            isRequired: false,
+            isVirtual: true
+          });
+        }
+        processedKeys.add(key);
+      });
+
+      // 3. Keep everything else (Manually defined fields, Link Buttons, etc.)
+      const remainingFields = existingFields.filter(f => !processedKeys.has(f.fieldKey.trim()));
+      const maxOrderSoFar = finalFields.length > 0 ? Math.max(...finalFields.map(f => f.orderIndex)) : 0;
+
+      remainingFields.forEach((f, idx) => {
         finalFields.push({
           ...f,
-          orderIndex: maxDbOrder + idx + 1
+          orderIndex: maxOrderSoFar + idx + 1
         });
       });
 
@@ -668,6 +698,7 @@ const FormBuilder: React.FC = () => {
       
       if (syncConfig) setSyncConfig(null);
     } catch (err) {
+      console.error('Sync error:', err);
       alert('שגיאה בסנכרון השדות.');
     } finally {
       setIsSchemaLoading(false);

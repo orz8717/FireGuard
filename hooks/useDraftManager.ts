@@ -10,7 +10,7 @@ export interface DraftData {
   last_updated?: string;
 }
 
-export const useDraftManager = (userId: string, tableName: string, isPreview: boolean = false) => {
+export const useDraftManager = (userId: string, tableName: string, isPreview: boolean = false, skipDraft: boolean = false) => {
   const [hasDraft, setHasDraft] = useState(false);
   const [draftData, setDraftData] = useState<any>(null);
   const [isChecking, setIsChecking] = useState(true);
@@ -25,7 +25,7 @@ export const useDraftManager = (userId: string, tableName: string, isPreview: bo
   // Check for existing draft on load
   useEffect(() => {
     const checkDraft = async () => {
-      if (!userId || !tableName) {
+      if (!userId || !tableName || skipDraft) {
         setIsChecking(false);
         return;
       }
@@ -81,7 +81,7 @@ export const useDraftManager = (userId: string, tableName: string, isPreview: bo
 
   // Save draft manually or auto-save
   const saveDraft = useCallback(async (dataToSave?: any) => {
-    if (isPreview || isCancellingRef.current) return;
+    if (isPreview || isCancellingRef.current || skipDraft) return;
 
     const data = dataToSave || currentDataRef.current;
     if (!userId || !tableName || !data) return;
@@ -135,7 +135,7 @@ export const useDraftManager = (userId: string, tableName: string, isPreview: bo
   // Auto-save on unmount and beforeunload
   useEffect(() => {
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
-      if (isPreview || isCancellingRef.current) return;
+      if (isPreview || isCancellingRef.current || skipDraft) return;
       
       const data = currentDataRef.current;
       if (!userId || !tableName || !data) return;
@@ -184,11 +184,11 @@ export const useDraftManager = (userId: string, tableName: string, isPreview: bo
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload);
       // Also save on unmount if we have data
-      if (!isPreview && currentDataRef.current && Object.keys(currentDataRef.current).length > 0) {
+      if (!isPreview && !skipDraft && currentDataRef.current && Object.keys(currentDataRef.current).length > 0) {
         saveDraft(currentDataRef.current);
       }
     };
-  }, [userId, tableName, saveDraft, isPreview]);
+  }, [userId, tableName, saveDraft, isPreview, skipDraft]);
 
   return {
     hasDraft,

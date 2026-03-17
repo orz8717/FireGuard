@@ -28,24 +28,20 @@ interface LayoutProps {
   setActiveScreen: (screen: string) => void;
 }
 
+import { APP_SCREENS } from '../src/constants/screens';
+
 const Layout: React.FC<LayoutProps> = ({ children, user, onLogout, activeScreen, setActiveScreen }) => {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = React.useState(false);
   const { hasPermission } = usePermissions();
 
-  const menuItems = [
-    { id: 'dashboard', label: 'לוח בקרה', icon: <LayoutDashboard size={20} />, screenKey: 'dashboard' },
-    { id: 'customers', label: 'לקוחות', icon: <Users size={20} />, screenKey: 'customers' },
-    { id: 'inspections', label: 'ביקורות', icon: <ClipboardCheck size={20} />, screenKey: 'inspections' },
-    { id: 'certificates', label: 'אישורים', icon: <FileText size={20} />, screenKey: 'certificates' },
-    { id: 'users', label: 'ניהול משתמשים', icon: <Settings size={20} />, screenKey: 'users' },
-    { id: 'form_builder', label: 'עורך טפסים', icon: <Trello size={20} />, screenKey: 'form_builder' },
-    { id: 'diagnostics', label: 'אבחון ו-QA', icon: <Activity size={20} />, screenKey: 'diagnostics' },
-    { id: 'import', label: 'ייבוא נתונים', icon: <Upload size={20} />, screenKey: 'import' },
-    { id: 'import_flow', label: 'מדריך ייבוא', icon: <Info size={20} />, screenKey: 'import' },
-    { id: 'db_manager', label: 'ניהול מסד נתונים', icon: <Database size={20} />, screenKey: 'db_manager' },
-    { id: 'triggers', label: 'תכנות טריגרים', icon: <Zap size={20} />, screenKey: 'triggers' },
-    { id: 'audit_logs', label: 'יומן פעילות', icon: <History size={20} />, screenKey: 'audit_logs' },
-  ];
+  const menuItems = APP_SCREENS
+    .filter(screen => screen.showInMenu)
+    .map(screen => ({
+      id: screen.id || screen.key,
+      label: screen.label,
+      icon: screen.icon,
+      screenKey: screen.key
+    }));
 
   const visibleMenuItems = menuItems.filter(item => {
     if (item.id === 'import_flow') return hasPermission('import', 'canView');

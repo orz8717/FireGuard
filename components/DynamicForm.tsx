@@ -381,7 +381,12 @@ const DynamicForm: React.FC<DynamicFormProps> = ({
     updateCurrentData,
     setHasDraft,
     setIsCancelling
-  } = useDraftManager(currentUser?.id || '', template.id, isPreview);
+  } = useDraftManager(
+    currentUser?.id || '', 
+    template.id, 
+    isPreview, 
+    template.name.startsWith('עדכון טבלת')
+  );
 
   const [showDraftPrompt, setShowDraftPrompt] = React.useState(false);
 
@@ -1009,9 +1014,35 @@ const DynamicForm: React.FC<DynamicFormProps> = ({
         )}
       </div>
       
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-4 p-2">
-        {[...template.fields].sort((a,b) => (a.orderIndex || 0) - (b.orderIndex || 0)).map(field => renderField(field))}
+      {/* Core Fields Section */}
+      <div className="space-y-4">
+        <div className="flex items-center gap-2 px-2">
+           <div className="h-4 w-1 bg-blue-600 rounded-full" />
+           <h3 className="text-sm font-black text-slate-800 uppercase tracking-wider">פרטי ליבה</h3>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-4 p-2">
+          {[...template.fields]
+            .filter(f => !f.isVirtual)
+            .sort((a,b) => (a.orderIndex || 0) - (b.orderIndex || 0))
+            .map(field => renderField(field))}
+        </div>
       </div>
+
+      {/* Dynamic Fields Section */}
+      {template.fields.some(f => f.isVirtual) && (
+        <div className="space-y-4 mt-8">
+          <div className="flex items-center gap-2 px-2">
+             <div className="h-4 w-1 bg-emerald-500 rounded-full" />
+             <h3 className="text-sm font-black text-slate-800 uppercase tracking-wider">נתונים דינמיים</h3>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-8 gap-y-4 p-2 bg-slate-50/50 rounded-[2rem] border border-slate-100">
+            {[...template.fields]
+              .filter(f => f.isVirtual)
+              .sort((a,b) => (a.orderIndex || 0) - (b.orderIndex || 0))
+              .map(field => renderField(field))}
+          </div>
+        </div>
+      )}
 
       {template.navigation_config?.enabled && (
         <div className="p-2">

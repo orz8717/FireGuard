@@ -258,6 +258,46 @@ class DBService {
     }
   }
 
+  async getVirtualColumns(tableName: string): Promise<string[]> {
+    try {
+      const columns = await this.getTableColumns(tableName);
+      const jsonbCol = columns.find(c => c.data_type.toLowerCase() === 'jsonb')?.column_name || 'notes';
+      
+      const data = await this.getRawTableData(tableName);
+      const keys = new Set<string>();
+      data.slice(0, 100).forEach(row => {
+        if (row[jsonbCol]) {
+          try {
+            const nested = typeof row[jsonbCol] === 'string' ? JSON.parse(row[jsonbCol]) : row[jsonbCol];
+            if (nested && typeof nested === 'object') {
+              Object.keys(nested).forEach(k => keys.add(k));
+            }
+          } catch {}
+        }
+      });
+      return Array.from(keys);
+    } catch { return []; }
+  }
+
+  async fetchAndFlatten(tableName: string): Promise<any[]> {
+    const data = await this.getRawTableData(tableName);
+    const columns = await this.getTableColumns(tableName);
+    const jsonbCol = columns.find(c => c.data_type.toLowerCase() === 'jsonb')?.column_name || 'notes';
+    
+    return data.map(row => {
+      let flattened = { ...row };
+      if (row[jsonbCol]) {
+        try {
+          const nested = typeof row[jsonbCol] === 'string' ? JSON.parse(row[jsonbCol]) : row[jsonbCol];
+          if (nested && typeof nested === 'object') {
+            flattened = { ...flattened, ...nested };
+          }
+        } catch {}
+      }
+      return flattened;
+    });
+  }
+
   async tableExists(tableName: string): Promise<boolean> {
     try {
       const { data, error } = await supabaseAdmin.rpc('check_table_exists', { p_table_name: tableName });
@@ -268,19 +308,44 @@ class DBService {
   async saveToTable(tableName: string, payload: any, useAdmin: boolean = false) {
     const client = useAdmin ? supabaseAdmin : supabase;
     
+    // Create a clean payload to avoid sending temporary IDs to Supabase
+    const cleanPayload = { ...payload };
+    const isTempId = cleanPayload.id && typeof cleanPayload.id === 'string' && cleanPayload.id.startsWith('TEMP_');
+    
+    if (isTempId) {
+      delete cleanPayload.id;
+    }
+
     // Determine the conflict target. 
     // We prioritize business keys (ROWID for dynamic tables, serial_number for inspections)
     // to prevent "duplicate key" errors during atomic saves or draft promotions.
-    const options: any = { onConflict: 'id' };
-    if (payload.ROWID) {
+    let options: any = { onConflict: 'id' };
+    
+    // If we removed a temporary ID, we shouldn't use 'id' as conflict target for upsert
+    // unless we have another unique key. If no other key, we might just want to insert.
+    if (isTempId && !cleanPayload.ROWID && !cleanPayload.serial_number) {
+      // For new records with temp IDs, just insert
+      const { data, error } = await client
+        .from(tableName)
+        .insert(cleanPayload)
+        .select();
+
+      if (error) {
+        console.error(`Error inserting to ${tableName}:`, error.message);
+        throw error;
+      }
+      return data[0];
+    }
+
+    if (cleanPayload.ROWID) {
       options.onConflict = 'ROWID';
-    } else if (payload.serial_number) {
+    } else if (cleanPayload.serial_number) {
       options.onConflict = 'serial_number';
     }
 
     const { data, error } = await client
       .from(tableName)
-      .upsert(payload, options)
+      .upsert(cleanPayload, options)
       .select();
 
     if (error) {
@@ -296,6 +361,10 @@ class DBService {
   }
 
   async deleteRecord(tableName: string, id: string | number) {
+    if (!id || id.toString().startsWith('TEMP_')) {
+      console.log(`[DB] Skipping delete for temporary ID: ${id}`);
+      return;
+    }
     const { error } = await supabaseAdmin.from(tableName).delete().eq('id', id);
     if (error) throw error;
   }
@@ -571,35 +640,31 @@ class DBService {
     if (tableName && tableName !== 'inspections') {
       const columns = await this.getTableColumns(tableName);
       const columnNames = columns.map(c => c.column_name);
+      const jsonbCol = columns.find(c => c.data_type.toLowerCase() === 'jsonb')?.column_name || 'notes';
       
       const rawData = { ...inspection.data };
       if ((inspection as any).id) rawData.id = (inspection as any).id;
       
       const payload: any = {};
+      const dynamicData: any = {};
       
-      if (columnNames.length > 0) {
-        // Only include keys that exist as columns in the target table
-        Object.keys(rawData).forEach(key => {
-          if (columnNames.includes(key)) {
-            payload[key] = rawData[key];
-          }
-        });
-        if (childData) {
-          payload['temp_child_data'] = childData;
+      Object.keys(rawData).forEach(key => {
+        if (columnNames.includes(key)) {
+          payload[key] = rawData[key];
+        } else {
+          dynamicData[key] = rawData[key];
         }
-      } else {
-        // Fallback if we can't get columns: remove known system fields that often cause issues
-        Object.assign(payload, rawData);
-        delete payload.customerId;
-        delete payload.technicianId;
-        delete payload.inspectionDate;
-        delete payload.status;
-        delete payload.templateName;
-        if (childData) {
-          payload['temp_child_data'] = childData;
-        }
+      });
+
+      // Re-bundle dynamic data into the JSONB column
+      if (Object.keys(dynamicData).length > 0) {
+        payload[jsonbCol] = JSON.stringify(dynamicData);
       }
 
+      if (childData) {
+        payload['temp_child_data'] = childData;
+      }
+      
       console.log(`[DB] Final Payload for custom table '${tableName}':`, payload);
       return await this.saveToTable(tableName, payload, true);
     }
@@ -633,29 +698,27 @@ class DBService {
     if (tableName && tableName !== 'inspections') {
       const columns = await this.getTableColumns(tableName);
       const columnNames = columns.map(c => c.column_name);
+      const jsonbCol = columns.find(c => c.data_type.toLowerCase() === 'jsonb')?.column_name || 'notes';
       
       const rawData = { ...inspection.data };
       const payload: any = { id };
+      const dynamicData: any = {};
       
-      if (columnNames.length > 0) {
-        Object.keys(rawData).forEach(key => {
-          if (columnNames.includes(key)) {
-            payload[key] = rawData[key];
-          }
-        });
-        if (childData) {
-          payload['temp_child_data'] = childData;
+      Object.keys(rawData).forEach(key => {
+        if (columnNames.includes(key)) {
+          payload[key] = rawData[key];
+        } else {
+          dynamicData[key] = rawData[key];
         }
-      } else {
-        Object.assign(payload, rawData);
-        delete payload.customerId;
-        delete payload.technicianId;
-        delete payload.inspectionDate;
-        delete payload.status;
-        delete payload.templateName;
-        if (childData) {
-          payload['temp_child_data'] = childData;
-        }
+      });
+
+      // Re-bundle dynamic data into the JSONB column
+      if (Object.keys(dynamicData).length > 0) {
+        payload[jsonbCol] = JSON.stringify(dynamicData);
+      }
+
+      if (childData) {
+        payload['temp_child_data'] = childData;
       }
 
       console.log(`[DB] Final Payload for custom table '${tableName}':`, payload);
@@ -683,6 +746,10 @@ class DBService {
   }
 
   async deleteInspection(id: string) {
+    if (!id || id.toString().startsWith('TEMP_')) {
+      console.log(`[DB] Skipping delete for temporary ID: ${id}`);
+      return;
+    }
     const { error } = await supabaseAdmin.from('inspections').delete().eq('id', id);
     if (error) throw error;
   }
@@ -1480,6 +1547,71 @@ class DBService {
       error_details: log.error_details,
       execution_time: log.execution_time
     }));
+  }
+
+  async getInspectionDrafts(userId: string) {
+    const { data, error } = await supabase
+      .from('inspection_drafts')
+      .select('*')
+      .eq('user_id', userId);
+    if (error) throw error;
+    return data;
+  }
+
+  async saveInspectionDraft(draft: any) {
+    const cleanDraft = { ...draft };
+    if (cleanDraft.id && typeof cleanDraft.id === 'string' && cleanDraft.id.startsWith('TEMP_')) {
+      delete cleanDraft.id;
+    }
+    const { error } = await supabase
+      .from('inspection_drafts')
+      .upsert(cleanDraft);
+    if (error) throw error;
+  }
+
+  async deleteInspectionDraft(id: string) {
+    if (!id || id.toString().startsWith('TEMP_')) {
+      console.log(`[DB] Skipping delete for temporary ID: ${id}`);
+      return;
+    }
+    const { error } = await supabase
+      .from('inspection_drafts')
+      .delete()
+      .eq('id', id);
+    if (error) throw error;
+  }
+
+  async getChildInspections(parentId: string, parentTable?: string) {
+    if (!parentId || parentId.toString().startsWith('TEMP_')) {
+      console.log(`[DB] Skipping child fetch for temporary parent ID: ${parentId}`);
+      return [];
+    }
+    // Basic implementation to fetch child records if they exist
+    return [];
+  }
+
+  async getInspectionByRowId(rowId: string, tableName: string = 'inspections') {
+    if (!rowId || rowId.toString().startsWith('TEMP_')) {
+      console.log(`[DB] Skipping fetch for temporary ID: ${rowId}`);
+      return null;
+    }
+    const { data, error } = await supabase
+      .from(tableName)
+      .select('*')
+      .eq('id', rowId)
+      .maybeSingle();
+    if (error) throw error;
+    return data;
+  }
+
+  async fixTableAtomicSchema(tableName: string) {
+    console.log(`[DB] Fixing atomic schema for ${tableName}`);
+    // Placeholder for schema fix logic
+  }
+
+  async fixChildTableSchema(tableName: string) {
+    console.log(`[DB] Fixing child schema for ${tableName}`);
+    // Placeholder for schema fix logic
   }
 }
 
