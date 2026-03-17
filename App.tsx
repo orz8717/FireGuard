@@ -5,31 +5,9 @@ import { authService } from './services/authService';
 import Login from './pages/Login';
 import Register from './pages/Register';
 import Layout from './components/Layout';
-import Dashboard from './pages/Dashboard';
-import Inspections from './pages/Inspections';
-import Users from './pages/Users';
-import FormBuilder from './pages/FormBuilder';
-import DbManager from './pages/DbManager';
-import Customers from './pages/Customers';
-import Diagnostics from './pages/Diagnostics';
-import ImportExcel from './pages/ImportExcel';
-import Certificates from './pages/Certificates';
-import AuditLogs from './pages/AuditLogs';
-import TriggersPage from './pages/TriggersPage';
-import UpdateTables from './pages/UpdateTables';
-
-const PlaceholderPage = ({ title }: { title: string }) => (
-  <div className="bg-white p-8 rounded-xl border shadow-sm animate-in fade-in slide-in-from-bottom-4 duration-500">
-    <h2 className="text-2xl font-bold mb-4">{title}</h2>
-    <p className="text-gray-600">מסך זה נמצא בפיתוח ויכלול את כל הנתונים הרלוונטיים עבור {title}.</p>
-  </div>
-);
-
 import { PermissionProvider, usePermissions } from './src/context/PermissionContext';
 import { SyncProvider } from './src/context/SyncContext';
-
-import { AlertCircle, Loader2 } from 'lucide-react';
-
+import { AlertCircle } from 'lucide-react';
 import { APP_SCREENS } from './src/constants/screens';
 
 const AppContent: React.FC<{ user: User | null, setUser: (u: User | null) => void }> = ({ user, setUser }) => {
@@ -111,63 +89,40 @@ const AppContent: React.FC<{ user: User | null, setUser: (u: User | null) => voi
   }
 
   const renderContent = () => {
-    switch (activeScreen) {
-      case 'dashboard':
-        if (!hasPermission('dashboard', 'canView')) {
-          // If no dashboard permission, try to find the first available screen from central config
-          const firstAvailable = APP_SCREENS.find(s => hasPermission(s.key, 'canView'))?.key;
-          
-          if (firstAvailable && firstAvailable !== activeScreen) {
-            setActiveScreen(firstAvailable);
-            return null; // Will re-render with new screen
-          }
-        }
-        return <Dashboard user={user} />;
-      case 'inspections':
-        if (!hasPermission('inspections', 'canView')) return <Dashboard user={user} />;
-        return <Inspections user={user} />;
-      case 'customers':
-        if (!hasPermission('customers', 'canView')) return <Dashboard user={user} />;
-        return <Customers user={user} />;
-      case 'certificates':
-        if (!hasPermission('certificates', 'canView')) return <Dashboard user={user} />;
-        return <Certificates user={user} />;
-      case 'users':
-        if (!hasPermission('users', 'canView')) return <Dashboard user={user} />;
-        return <Users onNavigateToSignup={() => setActiveScreen('signup')} />;
-      case 'signup':
-        if (!hasPermission('users', 'canCreate')) return <Dashboard user={user} />;
-        return (
-          <Register 
-            onBackToLogin={() => setActiveScreen('users')} 
-            onRegisterSuccess={() => setActiveScreen('users')} 
-            backButtonText="חזור לניהול משתמשים"
-          />
-        );
-      case 'form_builder':
-        if (!hasPermission('form_builder', 'canView')) return <Dashboard user={user} />;
-        return <FormBuilder />;
-      case 'diagnostics':
-        if (!hasPermission('diagnostics', 'canView')) return <Dashboard user={user} />;
-        return <Diagnostics />;
-      case 'import':
-        if (!hasPermission('import', 'canView')) return <Dashboard user={user} />;
-        return <ImportExcel />;
-      case 'db_manager':
-        if (!hasPermission('db_manager', 'canView')) return <Dashboard user={user} />;
-        return <DbManager />;
-      case 'audit_logs':
-        if (!hasPermission('audit_logs', 'canView')) return <Dashboard user={user} />;
-        return <AuditLogs user={user} />;
-      case 'triggers':
-        if (!hasPermission('triggers', 'canView')) return <Dashboard user={user} />;
-        return <TriggersPage user={user} />;
-      case 'update_tables':
-        if (!hasPermission('update_tables', 'canView')) return <Dashboard user={user} />;
-        return <UpdateTables user={user} />;
-      default:
-        return <Dashboard user={user} />;
+    // Special case for signup (registration of new users by admin)
+    if (activeScreen === 'signup') {
+      if (!hasPermission('users', 'canCreate')) {
+        const Dashboard = APP_SCREENS.find(s => s.key === 'dashboard')?.component;
+        return Dashboard ? <Dashboard user={user} /> : null;
+      }
+      return (
+        <Register 
+          onBackToLogin={() => setActiveScreen('users')} 
+          onRegisterSuccess={() => setActiveScreen('users')} 
+          backButtonText="חזור לניהול משתמשים"
+        />
+      );
     }
+
+    // Find screen by id or key from central config
+    const screen = APP_SCREENS.find(s => (s.id || s.key) === activeScreen);
+    
+    if (!screen || !screen.component) {
+      // Fallback to dashboard
+      const Dashboard = APP_SCREENS.find(s => s.key === 'dashboard')?.component;
+      return Dashboard ? <Dashboard user={user} /> : null;
+    }
+
+    // Check permission for the screen (unless it's dashboard)
+    if (activeScreen !== 'dashboard' && !hasPermission(screen.key, 'canView')) {
+      const Dashboard = APP_SCREENS.find(s => s.key === 'dashboard')?.component;
+      return Dashboard ? <Dashboard user={user} /> : null;
+    }
+
+    const Component = screen.component;
+    
+    // Most components accept user as a prop
+    return <Component user={user} onNavigateToSignup={() => setActiveScreen('signup')} />;
   };
 
   return (
