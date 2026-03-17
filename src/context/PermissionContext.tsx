@@ -6,8 +6,9 @@ import { dbService } from '../../services/dbService';
 interface PermissionContextType {
   permissions: Permission[];
   loading: boolean;
+  isRefreshing: boolean;
   hasPermission: (screenKey: string, action: keyof Omit<Permission, 'id' | 'userId' | 'screenKey'>) => boolean;
-  refreshPermissions: () => Promise<void>;
+  refreshPermissions: (silent?: boolean) => Promise<Permission[]>;
 }
 
 const PermissionContext = createContext<PermissionContextType | undefined>(undefined);
@@ -15,22 +16,28 @@ const PermissionContext = createContext<PermissionContextType | undefined>(undef
 export const PermissionProvider: React.FC<{ children: React.ReactNode; user: User | null }> = ({ children, user }) => {
   const [permissions, setPermissions] = useState<Permission[]>([]);
   const [loading, setLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
-  const refreshPermissions = React.useCallback(async () => {
+  const refreshPermissions = React.useCallback(async (silent = false): Promise<Permission[]> => {
     if (!user) {
       setPermissions([]);
       setLoading(false);
-      return;
+      setIsRefreshing(false);
+      return [];
     }
 
     try {
-      setLoading(true);
+      if (!silent) setLoading(true);
+      setIsRefreshing(true);
       const data = await dbService.getPermissions(user.id);
       setPermissions(data);
+      return data;
     } catch (error) {
       console.error('Error fetching permissions:', error);
+      return [];
     } finally {
       setLoading(false);
+      setIsRefreshing(false);
     }
   }, [user?.id]);
 
@@ -53,7 +60,7 @@ export const PermissionProvider: React.FC<{ children: React.ReactNode; user: Use
   };
 
   return (
-    <PermissionContext.Provider value={{ permissions, loading, hasPermission, refreshPermissions }}>
+    <PermissionContext.Provider value={{ permissions, loading, isRefreshing, hasPermission, refreshPermissions }}>
       {children}
     </PermissionContext.Provider>
   );

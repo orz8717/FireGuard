@@ -27,16 +27,60 @@ const PlaceholderPage = ({ title }: { title: string }) => (
 import { PermissionProvider, usePermissions } from './src/context/PermissionContext';
 import { SyncProvider } from './src/context/SyncContext';
 
+import { AlertCircle, Loader2 } from 'lucide-react';
+
 const AppContent: React.FC<{ user: User | null, setUser: (u: User | null) => void }> = ({ user, setUser }) => {
   const [activeScreen, setActiveScreen] = React.useState('dashboard');
   const [showRegister, setShowRegister] = React.useState(false);
+  const [permissionError, setPermissionError] = React.useState<string | null>(null);
   const { hasPermission, loading, refreshPermissions } = usePermissions();
 
   // Refresh permissions on every screen change to ensure real-time enforcement
   React.useEffect(() => {
-    if (user) {
-      refreshPermissions();
-    }
+    const checkPermissions = async () => {
+      if (user) {
+        // Perform background check without blocking UI
+        const freshPermissions = await refreshPermissions(true);
+        
+        // After refresh, verify if the user still has access to the current screen
+        const screenKey = activeScreen === 'signup' ? 'users' : activeScreen;
+        
+        // Admin always has access
+        if (user.role === UserRole.ADMIN) return;
+
+        const perm = freshPermissions.find(p => p.screenKey === screenKey);
+        const canView = perm ? !!perm.canView : false;
+        
+        // If access is lost
+        if (!canView) {
+          setPermissionError("הגישה נדחתה. הינך מועבר לעמוד אחר שיש לך הרשאה.");
+          
+          // Wait a bit to show the message then redirect
+          setTimeout(() => {
+            setPermissionError(null);
+            
+            // Find first available screen from fresh data
+            const firstAvailable = [
+              'dashboard', 'customers', 'inspections', 'certificates', 'users', 'form_builder', 
+              'diagnostics', 'import', 'db_manager', 'audit_logs', 'triggers'
+            ].find(s => {
+              if (s === 'dashboard') return true; // Dashboard usually allowed or has its own internal check
+              const p = freshPermissions.find(p => p.screenKey === s);
+              return p ? !!p.canView : false;
+            });
+            
+            if (firstAvailable && firstAvailable !== activeScreen) {
+              setActiveScreen(firstAvailable);
+            } else if (!firstAvailable) {
+              // If absolutely nothing is available, maybe logout or show error
+              setActiveScreen('dashboard');
+            }
+          }, 3000);
+        }
+      }
+    };
+    
+    checkPermissions();
   }, [activeScreen, user?.id]);
 
   const handleLogout = async () => {
@@ -134,6 +178,14 @@ const AppContent: React.FC<{ user: User | null, setUser: (u: User | null) => voi
       activeScreen={activeScreen} 
       setActiveScreen={setActiveScreen}
     >
+      {permissionError && (
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[200] animate-in fade-in slide-in-from-top-4">
+          <div className="bg-red-600 text-white px-6 py-3 rounded-xl shadow-2xl flex items-center gap-3 border border-red-500">
+            <AlertCircle size={20} />
+            <span className="font-bold">{permissionError}</span>
+          </div>
+        </div>
+      )}
       {renderContent()}
     </Layout>
   );
