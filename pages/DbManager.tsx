@@ -19,7 +19,13 @@ import {
   Copy
 } from 'lucide-react';
 
+import { usePermissions } from '../src/context/PermissionContext';
+
 const DbManager: React.FC = () => {
+  const { hasPermission } = usePermissions();
+  const canDelete = hasPermission('db_manager', 'canDelete');
+  const canView = hasPermission('db_manager', 'canView');
+
   const [tables, setTables] = React.useState<{ id: string; label: string }[]>([]);
   const [selectedTable, setSelectedTable] = React.useState<{ id: string; label: string } | null>(null);
   const [data, setData] = React.useState<any[]>([]);
@@ -29,9 +35,6 @@ const DbManager: React.FC = () => {
   const [deletingId, setDeletingId] = React.useState<string | number | null>(null);
   const [confirmConfig, setConfirmConfig] = React.useState<{ id: string | number } | null>(null);
   const [error, setError] = React.useState<string | null>(null);
-
-  const currentUser = authService.getCurrentUser();
-  const isAdmin = currentUser?.role === UserRole.ADMIN;
 
   const fetchTables = async (forceReload = false) => {
     setSidebarLoading(true);
@@ -200,6 +203,22 @@ $$ LANGUAGE plpgsql SECURITY DEFINER;
 -- 6. רענון סכמה
 NOTIFY pgrst, 'reload schema';`;
 
+  if (!canView) {
+    return (
+      <div className="flex flex-col items-center justify-center p-20 space-y-6 text-center">
+        <div className="w-24 h-24 bg-red-50 text-red-600 rounded-full flex items-center justify-center shadow-inner">
+          <AlertTriangle size={56} />
+        </div>
+        <div className="space-y-2">
+          <h3 className="text-3xl font-black text-slate-800">גישה נדחתה</h3>
+          <p className="text-slate-500 font-bold max-w-md mx-auto">
+            אין לך הרשאות מתאימות לצפייה בניהול מסד הנתונים.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-col md:flex-row h-[calc(100vh-80px)] md:h-[calc(100vh-120px)] gap-4 md:gap-6" dir="rtl">
       {/* Sidebar - Dynamic Table List */}
@@ -303,7 +322,7 @@ NOTIFY pgrst, 'reload schema';`;
                   <table className="w-full text-right text-[11px] border-collapse">
                     <thead className="bg-slate-800 text-white sticky top-0 z-10">
                       <tr>
-                        {isAdmin && <th className="p-4 text-center w-14 border-l border-white/5">פעולות</th>}
+                        {canDelete && <th className="p-4 text-center w-14 border-l border-white/5">פעולות</th>}
                         {headers.map(h => (
                           <th key={h} className="p-4 font-black whitespace-nowrap border-l border-white/5 uppercase tracking-tighter">
                             {h}
@@ -314,7 +333,7 @@ NOTIFY pgrst, 'reload schema';`;
                     <tbody className="divide-y divide-slate-100 bg-white">
                       {filteredData.map((item, idx) => (
                         <tr key={item.ROWID || item.id || idx} className="hover:bg-blue-50/50 transition-colors group">
-                          {isAdmin && (
+                          {canDelete && (
                             <td className="p-4 text-center border-l border-slate-50">
                               <button 
                                 onClick={() => setConfirmConfig({ id: item.ROWID || item.id })}

@@ -37,6 +37,7 @@ import {
 } from 'lucide-react';
 import DynamicForm from '../components/DynamicForm';
 import { authService } from '../services/authService';
+import { usePermissions } from '../src/context/PermissionContext';
 
 // --- SUPPLEMENTAL: FUNCTION PARAMETER DEFINITIONS ---
 type ParamType = 'field' | 'table' | 'column' | 'text' | 'number' | 'boolean';
@@ -59,7 +60,8 @@ interface FuncMeta {
 const FieldRow = React.memo(({ 
   field, 
   idx, 
-  isAdmin, 
+  canEdit,
+  canDelete,
   moveField, 
   setEditingField, 
   setEditTab, 
@@ -68,7 +70,8 @@ const FieldRow = React.memo(({
 }: {
   field: FormField;
   idx: number;
-  isAdmin: boolean;
+  canEdit: boolean;
+  canDelete: boolean;
   moveField: (index: number, direction: 'up' | 'down') => void;
   setEditingField: (field: FormField) => void;
   setEditTab: (tab: string) => void;
@@ -83,7 +86,7 @@ const FieldRow = React.memo(({
       <div className="flex items-center gap-3 md:gap-5 w-full sm:w-auto">
         <div className={`p-2 md:p-3 rounded-2xl transition-all shrink-0 flex items-center gap-1 ${field.isVirtual ? 'bg-orange-50 text-orange-400 group-hover:text-orange-600 group-hover:bg-orange-100' : 'bg-slate-50 text-slate-400 group-hover:text-blue-600 group-hover:bg-blue-50'}`}>
           <GripVertical size={20} className="md:w-[22px] md:h-[22px]" />
-          {isAdmin && (
+          {canEdit && (
             <div className="flex flex-col gap-0.5 ml-1">
               <button 
                 onClick={(e) => { e.stopPropagation(); moveField(idx, 'up'); }}
@@ -122,7 +125,7 @@ const FieldRow = React.memo(({
         {field.calculationFormula && <Calculator size={16} className="text-purple-500" />}
         {field.visibilityCondition && <Eye size={16} className="text-blue-500" />}
         {field.fieldType === FieldType.LINK_BUTTON && <Zap size={16} className="text-yellow-500" />}
-        {isAdmin && (
+        {canDelete && (
           <button 
             onClick={(e) => onDelete(e, field)} 
             className="p-2 text-slate-300 hover:text-red-600 rounded-lg transition-all min-h-[44px] min-w-[44px] flex items-center justify-center bg-slate-50 sm:bg-transparent"
@@ -146,7 +149,8 @@ const FieldRow = React.memo(({
     prev.field.isRequired === next.field.isRequired &&
     prev.field.options === next.field.options &&
     prev.idx === next.idx &&
-    prev.isAdmin === next.isAdmin &&
+    prev.canEdit === next.canEdit &&
+    prev.canDelete === next.canDelete &&
     prev.localFieldsLength === next.localFieldsLength &&
     prev.moveField === next.moveField &&
     prev.onDelete === next.onDelete &&
@@ -549,7 +553,11 @@ const ParameterAssistant: React.FC<{
   );
 };
 
-const FormBuilder: React.FC = () => {
+interface FormBuilderProps {
+  user: User;
+}
+
+const FormBuilder: React.FC<FormBuilderProps> = ({ user }) => {
   const [templates, setTemplates] = React.useState<FormTemplate[]>([]);
   const [customers, setCustomers] = React.useState<Customer[]>([]);
   const [users, setUsers] = React.useState<User[]>([]);
@@ -583,6 +591,9 @@ const FormBuilder: React.FC = () => {
   const [aiResponse, setAiResponse] = React.useState('');
   const [isAiLoading, setIsAiLoading] = React.useState(false);
   const [syncSuccess, setSyncSuccess] = React.useState(false);
+  const { hasPermission } = usePermissions();
+  const canEditForm = hasPermission('form_builder', 'canEdit');
+  const canDeleteForm = hasPermission('form_builder', 'canDelete');
 
   const handleMirrorSync = async (tableName?: string) => {
     const targetTable = tableName || localTableName;
@@ -706,11 +717,8 @@ const FormBuilder: React.FC = () => {
     }
   };
 
-  const currentUser = authService.getCurrentUser();
-  const isAdmin = currentUser?.role === UserRole.ADMIN;
-
   const moveField = React.useCallback((index: number, direction: 'up' | 'down') => {
-    if (!isAdmin) return;
+    if (!canEditForm) return;
     setLocalFields(prev => {
       const newFields = [...prev];
       const targetIndex = direction === 'up' ? index - 1 : index + 1;
@@ -721,7 +729,7 @@ const FormBuilder: React.FC = () => {
       return newFields.map((f, idx) => ({ ...f, orderIndex: idx + 1 }));
     });
     setHasChanges(true);
-  }, [isAdmin]);
+  }, [canEditForm]);
 
   const handleDeleteField = React.useCallback((e: React.MouseEvent, field: FormField) => {
     e.stopPropagation();
@@ -919,7 +927,7 @@ const FormBuilder: React.FC = () => {
               <button onClick={() => setSelectedTemplateId(t.id)} className={`w-full text-right p-4 rounded-2xl transition-all group ${selectedTemplateId === t.id ? 'bg-blue-600 text-white shadow-xl shadow-blue-200' : 'hover:bg-slate-50'}`} >
                 <div className="font-black text-sm">{t.name}</div> <div className={`text-[10px] font-bold ${selectedTemplateId === t.id ? 'text-blue-100' : 'text-slate-400'}`}>{t.formKey}</div>
               </button>
-              {isAdmin && (
+              {canDeleteForm && (
                 <button onClick={(e) => { e.stopPropagation(); setTemplateToDelete(t); }} className={`absolute top-2 left-2 p-2 rounded-lg opacity-0 group-hover/tmpl:opacity-100 transition-all ${selectedTemplateId === t.id ? 'bg-white/20 text-white hover:bg-white/40' : 'bg-red-50 text-red-600 hover:bg-red-100'}`} ><Trash2 size={14} /></button>
               )}
             </div>
@@ -1045,7 +1053,8 @@ const FormBuilder: React.FC = () => {
                   key={field.id}
                   field={field}
                   idx={idx}
-                  isAdmin={isAdmin}
+                  canEdit={canEditForm}
+                  canDelete={canDeleteForm}
                   moveField={moveField}
                   setEditingField={setEditingField}
                   setEditTab={setEditTab}
@@ -1547,7 +1556,7 @@ const FormBuilder: React.FC = () => {
                   )}
                 </div>
               )}
-              {editTab === 'preview' && ( <div className="max-w-4xl mx-auto border-4 border-dashed border-slate-100 rounded-[40px] p-12 bg-slate-50 shadow-inner relative"> <DynamicForm template={{...selectedTemplate!, fields: previewFields}} onCancel={() => {}} onSubmit={() => {}} contextData={previewContext} currentUser={currentUser} draftId="preview_session" isPreview={true} /> </div> )}
+              {editTab === 'preview' && ( <div className="max-w-4xl mx-auto border-4 border-dashed border-slate-100 rounded-[40px] p-12 bg-slate-50 shadow-inner relative"> <DynamicForm template={{...selectedTemplate!, fields: previewFields}} onCancel={() => {}} onSubmit={() => {}} contextData={previewContext} currentUser={user} draftId="preview_session" isPreview={true} /> </div> )}
             </div>
             <div className="p-4 md:p-8 border-t flex flex-col sm:flex-row justify-end gap-3 md:gap-4 bg-slate-50"> 
               <button onClick={() => setEditingField(null)} className="w-full sm:w-auto px-8 py-3 bg-white border rounded-2xl font-black text-slate-500 min-h-[44px]">ביטול</button> 

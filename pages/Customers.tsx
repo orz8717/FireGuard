@@ -62,7 +62,15 @@ const ORDERED_SCHEMA: ColumnDef[] = [
   { key: 'רמת סיכון', label: 'רמת סיכון', type: 'dynamic', icon: <ShieldAlert size={14} />, width: '100px', isOptional: true }
 ];
 
+import { usePermissions } from '../src/context/PermissionContext';
+
 const Customers: React.FC<CustomersProps> = ({ user }) => {
+  const { hasPermission } = usePermissions();
+  const canView = hasPermission('customers', 'canView');
+  const canEdit = hasPermission('customers', 'canEdit');
+  const canDelete = hasPermission('customers', 'canDelete');
+  const canCreate = hasPermission('customers', 'canCreate');
+
   const [customers, setCustomers] = React.useState<Customer[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [searchTerm, setSearchTerm] = React.useState('');
@@ -85,12 +93,11 @@ const Customers: React.FC<CustomersProps> = ({ user }) => {
   });
   const [showColumnPicker, setShowColumnPicker] = React.useState(false);
 
-  const isAdmin = user.role === UserRole.ADMIN;
-  const canCreate = user.role === UserRole.ADMIN || user.role === UserRole.OFFICE;
-
   React.useEffect(() => {
-    loadCustomers();
-  }, []);
+    if (canView) {
+      loadCustomers();
+    }
+  }, [canView]);
 
   const loadCustomers = async () => {
     setLoading(true);
@@ -236,6 +243,8 @@ const Customers: React.FC<CustomersProps> = ({ user }) => {
     (c.customerNumber && c.customerNumber.includes(searchTerm))
   );
 
+  if (!canView) return null;
+
   return (
     <div className="space-y-4 h-full flex flex-col" dir="rtl">
       {/* Search and Action Bar */}
@@ -303,7 +312,7 @@ const Customers: React.FC<CustomersProps> = ({ user }) => {
                       </th>
                     );
                   })}
-                  {isAdmin && <th className="p-3 font-bold text-[11px] text-center sticky left-0 z-10 bg-slate-800 w-[80px]">פעולות</th>}
+                  {(canEdit || canDelete) && <th className="p-3 font-bold text-[11px] text-center sticky left-0 z-10 bg-slate-800 w-[80px]">פעולות</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-50 text-xs">
@@ -320,11 +329,11 @@ const Customers: React.FC<CustomersProps> = ({ user }) => {
                           </td>
                         );
                       })}
-                      {isAdmin && (
+                      {(canEdit || canDelete) && (
                         <td className="p-3 sticky left-0 z-10 bg-white group-hover:bg-blue-50/30 transition-colors border-r">
                           <div className="flex justify-center gap-1">
-                            <button onClick={() => handleEdit(customer)} className="p-2 text-blue-600 hover:bg-blue-100 rounded-lg transition-all min-h-[44px] min-w-[44px] flex items-center justify-center"><Edit2 size={16} /></button>
-                            <button onClick={() => setDeleteConfirm(customer)} className="p-2 text-red-600 hover:bg-red-100 rounded-lg transition-all min-h-[44px] min-w-[44px] flex items-center justify-center"><Trash2 size={16} /></button>
+                            {canEdit && <button onClick={() => handleEdit(customer)} className="p-2 text-blue-600 hover:bg-blue-100 rounded-lg transition-all min-h-[44px] min-w-[44px] flex items-center justify-center"><Edit2 size={16} /></button>}
+                            {canDelete && <button onClick={() => setDeleteConfirm(customer)} className="p-2 text-red-600 hover:bg-red-100 rounded-lg transition-all min-h-[44px] min-w-[44px] flex items-center justify-center"><Trash2 size={16} /></button>}
                           </div>
                         </td>
                       )}
@@ -354,10 +363,10 @@ const Customers: React.FC<CustomersProps> = ({ user }) => {
                     <h3 className="font-bold text-gray-800 text-lg">{customer.name || "לקוח ללא שם"}</h3>
                     <p className="text-gray-600 text-sm font-mono">{customer.customerNumber || "---"}</p>
                   </div>
-                  {isAdmin && (
+                  {(canEdit || canDelete) && (
                     <div className="flex gap-1">
-                      <button onClick={() => handleEdit(customer)} className="p-2 text-blue-600 hover:bg-blue-100 rounded-lg transition-all min-h-[44px] min-w-[44px] flex items-center justify-center"><Edit2 size={16} /></button>
-                      <button onClick={() => setDeleteConfirm(customer)} className="p-2 text-red-600 hover:bg-red-100 rounded-lg transition-all min-h-[44px] min-w-[44px] flex items-center justify-center"><Trash2 size={16} /></button>
+                      {canEdit && <button onClick={() => handleEdit(customer)} className="p-2 text-blue-600 hover:bg-blue-100 rounded-lg transition-all min-h-[44px] min-w-[44px] flex items-center justify-center"><Edit2 size={16} /></button>}
+                      {canDelete && <button onClick={() => setDeleteConfirm(customer)} className="p-2 text-red-600 hover:bg-red-100 rounded-lg transition-all min-h-[44px] min-w-[44px] flex items-center justify-center"><Trash2 size={16} /></button>}
                     </div>
                   )}
                 </div>

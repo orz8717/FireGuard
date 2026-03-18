@@ -791,12 +791,8 @@ class DBService {
       tableId = userData.id;
       role = userData.role;
 
-      const isAdmin = role === UserRole.ADMIN || role === 'ADMIN';
-      const isOffice = role === UserRole.OFFICE || role === 'OFFICE';
-
-      if (!isAdmin && !isOffice) {
-        throw new Error(`User is not an ADMIN or OFFICE (Current Role: ${role || 'None'})`);
-      }
+      // Permission check is handled at the UI level via usePermissions()
+      // and enforced by RLS in the database.
 
       const payload: any = {
         name: bot.name,

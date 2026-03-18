@@ -20,7 +20,12 @@ interface AuditLogsProps {
   user: User;
 }
 
+import { usePermissions } from '../src/context/PermissionContext';
+
 const AuditLogs: React.FC<AuditLogsProps> = ({ user }) => {
+  const { hasPermission } = usePermissions();
+  const canView = hasPermission('audit_logs', 'canView');
+
   const [logs, setLogs] = React.useState<AuditLog[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [searchTerm, setSearchTerm] = React.useState('');
@@ -42,10 +47,10 @@ const AuditLogs: React.FC<AuditLogsProps> = ({ user }) => {
   };
 
   React.useEffect(() => {
-    if (user.role === UserRole.ADMIN) {
+    if (canView) {
       fetchLogs();
     }
-  }, [user]);
+  }, [canView]);
 
   const filteredLogs = logs.filter(log => {
     const matchesSearch = (log.user_name && log.user_name.toLowerCase().includes(searchTerm.toLowerCase())) ||
@@ -58,7 +63,7 @@ const AuditLogs: React.FC<AuditLogsProps> = ({ user }) => {
     return matchesSearch;
   });
 
-  if (user.role !== UserRole.ADMIN) {
+  if (!canView) {
     return (
       <div className="flex flex-col items-center justify-center p-20 space-y-6 text-center">
         <div className="w-24 h-24 bg-red-50 text-red-600 rounded-full flex items-center justify-center shadow-inner">

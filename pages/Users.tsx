@@ -5,6 +5,7 @@ import { dbService } from '../services/dbService';
 import { authService } from '../services/authService';
 import { Shield, UserPlus, Search, Edit2, Check, X, Loader2, Key, Lock, Eye, EyeOff } from 'lucide-react';
 import { DatabaseFixModal } from '../components/DatabaseFixModal';
+import { usePermissions } from '../src/context/PermissionContext';
 
 interface UsersProps {
   onNavigateToSignup?: () => void;
@@ -22,8 +23,9 @@ const Users: React.FC<UsersProps> = ({ onNavigateToSignup }) => {
   const [saving, setSaving] = React.useState(false);
   const [searchTerm, setSearchTerm] = React.useState('');
   const [dbError, setDbError] = React.useState<string | null>(null);
-  const currentUser = authService.getCurrentUser();
-  const isAdmin = currentUser?.role === UserRole.ADMIN;
+  const { hasPermission } = usePermissions();
+  const canCreateUser = hasPermission('users', 'canCreate');
+  const canEditUser = hasPermission('users', 'canEdit');
 
   // Filter unique screens by key for the permissions UI
   const screens = React.useMemo(() => {
@@ -58,47 +60,18 @@ const Users: React.FC<UsersProps> = ({ onNavigateToSignup }) => {
     
     // Define default permissions based on role if no record exists
     const getDefaultPerms = (screenKey: string, role: UserRole) => {
-      const isAdmin = role === UserRole.ADMIN;
-      const isOffice = role === UserRole.OFFICE;
+      const screen = APP_SCREENS.find(s => s.key === screenKey);
+      if (!screen || !screen.defaultRoles) return false;
       
-      // Admin has everything
-      if (isAdmin) return true;
-      
-      // Office has specific screens
-      if (isOffice) {
-        const officeScreens = ['dashboard', 'customers', 'inspections', 'certificates', 'import', 'triggers', 'update_tables'];
-        if (officeScreens.includes(screenKey)) return true;
-      }
-      
-      // Regular user has basic screens
-      const userScreens = ['dashboard', 'customers', 'inspections', 'update_tables'];
-      if (userScreens.includes(screenKey)) return true;
-      
-      return false;
+      // Check if the role is in the defaultRoles list
+      // We check both the role itself and its string representation
+      return screen.defaultRoles.includes(role) || screen.defaultRoles.includes(String(role).toUpperCase());
     };
 
     // Initialize default perms for screens not present
     const fullPerms = screens.map(s => {
       const existing = userPerms.find(p => p.screenKey === s.key);
-      const isAdmin = user.role === UserRole.ADMIN;
-
-      // If it's an admin, we force all permissions to true for the UI
-      if (isAdmin) {
-        return {
-          id: existing?.id || '', 
-          userId: user.id, 
-          screenKey: s.key,
-          canView: true, 
-          canCreate: true, 
-          canEdit: true, 
-          canDelete: true,
-          canExport: true, 
-          canApprove: true, 
-          canGenerateCertificates: true, 
-          canImportExcel: true
-        };
-      }
-
+      
       if (existing) return existing;
       
       const defaultVal = getDefaultPerms(s.key, user.role);
@@ -206,7 +179,7 @@ const Users: React.FC<UsersProps> = ({ onNavigateToSignup }) => {
             className="pr-10 pl-4 py-2 border rounded-lg outline-none w-full sm:w-64 focus:ring-2 focus:ring-blue-500"
           />
         </div>
-        {isAdmin && (
+        {canCreateUser && (
           <button 
             onClick={onNavigateToSignup}
             className="flex items-center justify-center w-full sm:w-auto px-4 py-3 sm:py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 shadow-sm transition-all min-h-[44px]"
@@ -252,7 +225,7 @@ const Users: React.FC<UsersProps> = ({ onNavigateToSignup }) => {
                   }
                 </td>
                 <td className="p-4">
-                  {isAdmin && (
+                  {canEditUser && (
                     <button 
                       onClick={() => handleEditPermissions(u)}
                       className="flex items-center justify-center gap-1 text-blue-600 hover:bg-blue-50 px-3 py-2 rounded-lg transition-colors border border-blue-100 min-h-[44px]"
@@ -297,7 +270,7 @@ const Users: React.FC<UsersProps> = ({ onNavigateToSignup }) => {
                   <span className="text-red-600 flex items-center gap-1 font-medium"><X size={16}/> מושבת</span>
                 }
               </div>
-              {isAdmin && (
+              {canEditUser && (
                 <button 
                   onClick={() => handleEditPermissions(u)}
                   className="flex items-center justify-center gap-1 text-blue-600 hover:bg-blue-50 px-3 py-2 rounded-lg transition-colors border border-blue-100 min-h-[44px]"

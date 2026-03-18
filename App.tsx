@@ -26,8 +26,8 @@ const AppContent: React.FC<{ user: User | null, setUser: (u: User | null) => voi
         // After refresh, verify if the user still has access to the current screen
         const screenKey = activeScreen === 'signup' ? 'users' : activeScreen;
         
-        // Admin always has access
-        if (user.role === UserRole.ADMIN) return;
+        // Dashboard is always accessible
+        if (screenKey === 'dashboard') return;
 
         const perm = freshPermissions.find(p => p.screenKey === screenKey);
         const canView = perm ? !!perm.canView : false;

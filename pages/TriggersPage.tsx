@@ -75,7 +75,15 @@ interface TriggerHistory {
 
 const GAS_WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbx9Aprjm7RISvTet4j6xip62QlaUPeEnAy5cWDj6JKexwmifRyqDQ0PjuDP0Y3cB9Cg/exec';
 
+import { usePermissions } from '../src/context/PermissionContext';
+
 const TriggersPage: React.FC<TriggersPageProps> = ({ user }) => {
+  const { hasPermission } = usePermissions();
+  const canView = hasPermission('triggers', 'canView');
+  const canEdit = hasPermission('triggers', 'canEdit');
+  const canDelete = hasPermission('triggers', 'canDelete');
+  const canCreate = hasPermission('triggers', 'canCreate');
+
   const [activeTab, setActiveTab] = useState<'bots' | 'history'>('bots');
   const [isWizardOpen, setIsWizardOpen] = useState(false);
   const [tables, setTables] = useState<{ id: string; label: string }[]>([]);
@@ -359,13 +367,13 @@ const TriggersPage: React.FC<TriggersPageProps> = ({ user }) => {
   };
 
   useEffect(() => {
-    if (user.role !== UserRole.ADMIN && user.role !== UserRole.OFFICE) {
+    if (!canView) {
       window.location.href = '/';
       return;
     }
     fetchTables();
     fetchBots();
-  }, [user]);
+  }, [canView]);
 
   const fetchBots = async () => {
     try {
@@ -484,20 +492,13 @@ const TriggersPage: React.FC<TriggersPageProps> = ({ user }) => {
     if (!window.confirm('האם אתה בטוח שברצונך למחוק בוט זה?')) return;
 
     try {
-      // 1. Verify ADMIN role
+      // 1. Verify Authentication
       const { data: { session } } = await supabase.auth.getSession();
       const user = session?.user;
       if (!user) throw new Error('User not authenticated');
 
-      // Security Check: Verify role is 'ADMIN' (uppercase) in public.users
-      const { data: userData, error: roleError } = await supabaseAdmin
-        .from('users')
-        .select('role')
-        .eq('id', user.id)
-        .single();
-
-      if (roleError || !userData || userData.role !== 'ADMIN') {
-        alert('שגיאת הרשאה: רק מנהל מערכת (ADMIN) רשאי למחוק בוטים.');
+      if (!canDelete) {
+        alert('שגיאת הרשאה: אין לך הרשאה למחוק בוטים.');
         return;
       }
 
@@ -540,7 +541,7 @@ const TriggersPage: React.FC<TriggersPageProps> = ({ user }) => {
     setEditingBot({ ...editingBot, steps: editingBot.steps.filter(s => s.id !== stepId) });
   };
 
-  if (user.role !== UserRole.ADMIN && user.role !== UserRole.OFFICE) return null;
+  if (!canView) return null;
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500" dir="rtl">
@@ -552,13 +553,15 @@ const TriggersPage: React.FC<TriggersPageProps> = ({ user }) => {
           </h1>
           <p className="text-slate-500 mt-1 font-medium">בניית בוטים ותהליכי אוטומציה מתקדמים</p>
         </div>
-        <button 
-          onClick={openNewBotWizard}
-          className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-xl font-bold flex items-center gap-2 transition-all shadow-lg shadow-blue-200"
-        >
-          <Plus size={20} />
-          צור בוט חדש
-        </button>
+          {canCreate && (
+            <button 
+              onClick={openNewBotWizard}
+              className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-xl font-bold flex items-center gap-2 transition-all shadow-lg shadow-blue-200"
+            >
+              <Plus size={20} />
+              צור בוט חדש
+            </button>
+          )}
       </div>
 
       <div className="bg-white rounded-2xl border shadow-sm overflow-hidden">
@@ -604,13 +607,17 @@ const TriggersPage: React.FC<TriggersPageProps> = ({ user }) => {
                         <td className="px-4 py-4 font-mono text-sm text-blue-600">{bot.event.targetTable}</td>
                         <td className="px-4 py-4 text-slate-600 font-medium">{bot.steps.length} שלבים</td>
                         <td className="px-4 py-4">
-                          <button onClick={(e) => toggleBotStatus(e, bot.id)} className={`w-12 h-6 rounded-full relative transition-all ${bot.isActive ? 'bg-emerald-500' : 'bg-slate-300'}`}>
+                          <button 
+                            onClick={(e) => canEdit && toggleBotStatus(e, bot.id)} 
+                            disabled={!canEdit}
+                            className={`w-12 h-6 rounded-full relative transition-all ${bot.isActive ? 'bg-emerald-500' : 'bg-slate-300'} ${!canEdit ? 'opacity-50 cursor-not-allowed' : ''}`}
+                          >
                             <div className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all ${bot.isActive ? 'left-7' : 'left-1'}`} />
                           </button>
                         </td>
                         <td className="px-4 py-4 text-slate-500 text-sm">{bot.lastExecuted ? new Date(bot.lastExecuted).toLocaleString('he-IL') : 'טרם הורץ'}</td>
                         <td className="px-4 py-4 text-left">
-                          {user.role === UserRole.ADMIN && (
+                          {canDelete && (
                             <button onClick={(e) => deleteBot(e, bot.id)} className="p-2 text-red-400 hover:bg-red-50 hover:text-red-600 rounded-lg transition-colors">
                               <Trash2 size={18} />
                             </button>
