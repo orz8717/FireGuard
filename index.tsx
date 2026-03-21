@@ -27,13 +27,19 @@ root.render(
   </React.StrictMode>
 );
 
-// Register Service Worker
+import { Workbox } from 'workbox-window';
+
+// Register Service Worker using Workbox
 if ('serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js').then(registration => {
-      console.log('SW registered: ', registration);
-    }).catch(registrationError => {
-      console.log('SW registration failed: ', registrationError);
-    });
+  const wb = new Workbox('/sw.js');
+
+  wb.addEventListener('installed', (event) => {
+    if (event.isUpdate) {
+      if (confirm('גרסה חדשה זמינה. האם ברצונך לרענן?')) {
+        window.location.reload();
+      }
+    }
   });
+
+  wb.register();
 }

@@ -28,12 +28,15 @@ const Dashboard: React.FC<DashboardProps> = ({ user }) => {
   React.useEffect(() => {
     const load = async () => {
       try {
-        const [c, i, certs] = await Promise.all([
+        const [c, allInspections] = await Promise.all([
           hasPermission('customers', 'canView') ? dbService.getCustomers() : Promise.resolve([]),
-          hasPermission('inspections', 'canView') ? dbService.getInspections() : Promise.resolve([]),
-          hasPermission('certificates', 'canView') ? dbService.getCertificates() : Promise.resolve([])
+          hasPermission('inspections', 'canView') || hasPermission('certificates', 'canView') ? dbService.getInspections() : Promise.resolve([])
         ]);
-        setData({ customers: c, inspections: i, certificates: certs });
+        
+        const i = hasPermission('inspections', 'canView') ? allInspections : [];
+        const certs = hasPermission('certificates', 'canView') ? allInspections.filter(insp => insp.templateName?.startsWith('אישור')) : [];
+        
+        setData({ customers: c, inspections: i, certificates: certs as any });
       } catch (err) {
       } finally {
         setLoading(false);

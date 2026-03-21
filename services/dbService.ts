@@ -1,11 +1,23 @@
 import { supabase, supabaseAdmin, supabaseAnon } from './supabaseClient';
 import { User, Customer, Inspection, Certificate, FormTemplate, Permission, UserRole, InspectionStatus, InspectionType, FormField, FieldType, AuditLog } from '../types';
+import { localDb } from './localDb';
+import { syncEngine } from './syncEngine';
+import { schemaService } from './schemaService';
 
 class DBService {
   public supabaseAdmin = supabaseAdmin;
+  public localDb = localDb;
+  public syncEngine = syncEngine;
 
   private dynamicSchemaCache: Record<string, any[]> | null = null;
   private isFetchingSchema = false;
+
+  constructor() {
+    // Set up post-sync automation trigger
+    this.syncEngine.onItemSynced = async (table, recordId, eventType) => {
+      await this.triggerBots(table, recordId, eventType as any);
+    };
+  }
 
   async syncData(userName: string, parentTableName?: string, childTableName?: string): Promise<Record<string, any[]>> {
     if (this.isFetchingSchema) {
@@ -24,12 +36,27 @@ class DBService {
         tablesToSync.push(...allTables.map(t => t.id));
       }
 
-      const schemaEntries = await Promise.all(tablesToSync.map(async (tableName) => {
+      const schemaEntries = [];
+      // Sequential fetching to avoid statement timeouts (57014)
+      for (const tableName of tablesToSync) {
         try {
           const data = await this.getRawTableData(tableName);
-          return { table: tableName, data };
-        } catch { return { table: tableName, data: [] }; }
-      }));
+          
+          // Wait for dynamic schema hydration to complete
+          await localDb.waitForReady();
+          
+          // Try to access the table dynamically
+          const table = localDb.table(tableName);
+          if (table) {
+            await table.bulkPut(data);
+          }
+          
+          schemaEntries.push({ table: tableName, data });
+        } catch (err) { 
+          console.error(`[DB] Failed to sync ${tableName}:`, err);
+          schemaEntries.push({ table: tableName, data: [] }); 
+        }
+      }
       
       const dtd: Record<string, any[]> = { ...(this.dynamicSchemaCache || {}) };
       schemaEntries.forEach(e => { dtd[e.table] = e.data; });
@@ -180,9 +207,55 @@ class DBService {
    * Helper to fetch all rows from a table, bypassing Supabase's 1000-row limit via pagination.
    */
   private async fetchFullTable(tableName: string, orderCol?: string, orderAsc: boolean = true, useAdmin: boolean = false) {
+    // Wait for dynamic schema hydration to complete
+    await localDb.waitForReady();
+    
+    // Try local first
+    let localData: any[] = [];
+    try {
+      let table = localDb.table(tableName);
+      
+      // If table doesn't exist locally, try to refresh schema once
+      if (!table) {
+        console.warn(`[DB] Table ${tableName} not found in local schema. Attempting schema refresh...`);
+        const schema = await schemaService.getSchema();
+        await localDb.hydrateDynamicSchema(schema);
+        table = localDb.table(tableName);
+      }
+
+      if (table) {
+        localData = await table.toArray();
+      }
+    } catch (e) {
+      console.error(`[DB] Failed to fetch local data for ${tableName}:`, e);
+    }
+
+    // If we have local data, return it (we'll sync in background if online)
+    if (localData.length > 0) {
+      if (navigator.onLine) {
+        // Trigger background sync for this table
+        this.getRawTableDataFromSupabase(tableName).then(async (remoteData) => {
+          try {
+            const table = localDb.table(tableName);
+            if (table) {
+              await table.bulkPut(remoteData);
+            }
+          } catch (e) {
+            console.error(`[DB] Failed to sync ${tableName} in background:`, e);
+          }
+        }).catch(console.error);
+      }
+      return localData;
+    }
+
+    // Fallback to live fetch if no local data
+    return await this.getRawTableDataFromSupabase(tableName);
+  }
+
+  private async getRawTableDataFromSupabase(tableName: string, orderCol?: string, orderAsc: boolean = true, useAdmin: boolean = false) {
     let allData: any[] = [];
     let from = 0;
-    const step = 1000;
+    const step = 200; // Reduced from 1000 to avoid statement timeouts (57014)
     let finished = false;
     const client = useAdmin ? supabaseAdmin : supabase;
 
@@ -192,7 +265,10 @@ class DBService {
         query = query.order(orderCol, { ascending: orderAsc });
       }
       const { data, error } = await query;
-      if (error) throw error;
+      if (error) {
+        console.error(`[DB] Error fetching ${tableName} at range ${from}-${from + step}:`, error);
+        throw error;
+      }
       if (data && data.length > 0) {
         allData = [...allData, ...data];
         if (data.length < step) finished = true;
@@ -229,6 +305,34 @@ class DBService {
 
   async reloadSchemaCache(): Promise<void> {
     try { await supabaseAdmin.rpc('reload_schema_cache'); } catch {}
+  }
+
+  async hydrateMetadata(userName: string) {
+    console.log('[DB] Starting metadata hydration...');
+    try {
+      // Fetch all core tables to populate local cache
+      const coreTables = [
+        'users',
+        'customers',
+        'form_templates',
+        'form_fields',
+        'automation_bots',
+        'permissions'
+      ];
+      
+      // Sequential fetching to avoid overloading the server and causing timeouts
+      for (const table of coreTables) {
+        console.log(`[DB] Hydrating ${table}...`);
+        await this.fetchFullTable(table);
+      }
+      
+      // Also sync dynamic schema
+      await this.syncData(userName);
+      
+      console.log('[DB] Metadata hydration complete.');
+    } catch (error) {
+      console.error('[DB] Metadata hydration failed:', error);
+    }
   }
 
   async getRawTableData(tableName: string): Promise<any[]> {
@@ -305,72 +409,181 @@ class DBService {
     } catch { return false; }
   }
 
-  async saveToTable(tableName: string, payload: any, useAdmin: boolean = false) {
-    const client = useAdmin ? supabaseAdmin : supabase;
+  async saveToTable(tableName: string, payload: any, useAdmin: boolean = false, skipSyncQueue: boolean = false) {
+    const oldId = payload.id;
+    const isTempId = !oldId;
     
-    // Create a clean payload to avoid sending temporary IDs to Supabase
-    const cleanPayload = { ...payload };
-    const isTempId = cleanPayload.id && typeof cleanPayload.id === 'string' && cleanPayload.id.startsWith('TEMP_');
-    
+    // Ensure ID exists (Client-Side UUID)
     if (isTempId) {
-      delete cleanPayload.id;
+      payload.id = crypto.randomUUID();
     }
-
-    // Determine the conflict target. 
-    // We prioritize business keys (ROWID for dynamic tables, serial_number for inspections)
-    // to prevent "duplicate key" errors during atomic saves or draft promotions.
-    let options: any = { onConflict: 'id' };
     
-    // If we removed a temporary ID, we shouldn't use 'id' as conflict target for upsert
-    // unless we have another unique key. If no other key, we might just want to insert.
-    if (isTempId && !cleanPayload.ROWID && !cleanPayload.serial_number) {
-      // For new records with temp IDs, just insert
-      const { data, error } = await client
-        .from(tableName)
-        .insert(cleanPayload)
-        .select();
+    // Add timestamps
+    const now = new Date().toISOString();
+    if (!payload.created_at) payload.created_at = now;
+    payload.updated_at = now;
 
-      if (error) {
-        console.error(`Error inserting to ${tableName}:`, error.message);
-        throw error;
+    try {
+      // Wait for dynamic schema hydration to complete
+      await localDb.waitForReady();
+      
+      // Save to local DB first
+      try {
+        let table = localDb.table(tableName);
+        
+        // If table doesn't exist locally, try to refresh schema once
+        if (!table) {
+          console.warn(`[DB] Table ${tableName} not found in local schema. Attempting schema refresh...`);
+          const schema = await schemaService.getSchema();
+          await localDb.hydrateDynamicSchema(schema);
+          table = localDb.table(tableName);
+        }
+
+        if (table) {
+          await table.put(payload);
+        }
+      } catch (e) {
+        console.error(`[DB] Failed to save to local table ${tableName}:`, e);
+        throw e;
       }
-      return data[0];
-    }
 
-    if (cleanPayload.ROWID) {
-      options.onConflict = 'ROWID';
-    } else if (cleanPayload.serial_number) {
-      options.onConflict = 'serial_number';
-    }
-
-    const { data, error } = await client
-      .from(tableName)
-      .upsert(cleanPayload, options)
-      .select();
-
-    if (error) {
-      console.error(`Error saving to ${tableName}:`, error.message);
+      console.log(`[Dexie Save] Table: ${tableName} | ID: ${payload.id} | Data:`, payload);
+    } catch (error) {
+      console.error(`[Dexie Error] Failed to save to table: ${tableName}. Error:`, error);
       throw error;
     }
 
-    if (!data || data.length === 0) {
-      throw new Error(`Data sync failed for table: ${tableName}`);
+    if (!skipSyncQueue) {
+      // Add to sync queue
+      await localDb.addToSyncQueue(tableName, 'UPSERT', payload);
+
+      // Trigger sync in background
+      if (navigator.onLine) {
+        this.syncEngine.processQueue();
+      }
+    } else {
+      // If skipping queue, it means it's being synced to Supabase directly
+      const client = useAdmin ? supabaseAdmin : supabase;
+      
+      // Apply Sanitization Layer (Source of Truth: Supabase Schema)
+      const sanitizedPayload = await schemaService.sanitizePayload(tableName, payload);
+      
+      const { error } = await client.from(tableName).upsert(sanitizedPayload);
+      if (error) throw error;
     }
 
-    return data[0];
+    return payload;
   }
 
-  async deleteRecord(tableName: string, id: string | number) {
-    if (!id || id.toString().startsWith('TEMP_')) {
-      console.log(`[DB] Skipping delete for temporary ID: ${id}`);
-      return;
+  async saveAuditData(tableName: string, parentData: any, childData: any[]) {
+    try {
+      // --- PARENT LOGIC ---
+      if (!parentData.id) {
+        parentData.id = crypto.randomUUID();
+      }
+      
+      const now = new Date().toISOString();
+      if (!parentData.created_at) parentData.created_at = now;
+      parentData.updated_at = now;
+      parentData.last_modified_client = now;
+
+      // Handle Hebrew tables: put childData into temp_child_data
+      const isHebrewTable = ['ביקורת_שנתית', 'חצי_שנתי', 'טופס_4', 'טופס_5', 'טופס_6', 'כיבויים_חצי_שנתי', 'כיבויים_שנתי', 'כיבויים_שנתי_2'].includes(tableName);
+      
+      const recordToSave = {
+        ...parentData,
+        ...(isHebrewTable ? { temp_child_data: childData } : {})
+      };
+
+      // Save Parent to localDb.inspections
+      await localDb.inspections.put(recordToSave);
+      console.log(`[Dexie Save] Table: inspections | ID: ${parentData.id}`);
+      
+      // Add Parent to Sync Queue
+      await localDb.addToSyncQueue('inspections', 'UPSERT', recordToSave);
+      console.log(`[Sync Queue] Task added for inspections`);
+
+      // --- CHILD LOGIC ---
+      if (childData && Array.isArray(childData)) {
+        for (const child of childData) {
+          // Ensure each item has a unique UUID
+          if (!child.id) {
+            child.id = crypto.randomUUID();
+          }
+          
+          // Explicitly set parent_id to the inspection's UUID
+          child.parent_id = parentData.id;
+          
+          if (!child.created_at) child.created_at = now;
+          child.updated_at = now;
+
+          // Dynamic Routing: Save child to the correct Hebrew store
+          try {
+            await localDb.table(tableName).put(child);
+          } catch (e) {
+            console.error(`[DB] Failed to save child to local table ${tableName}:`, e);
+          }
+          console.log(`[Dexie Save] Table: ${tableName} | ID: ${child.id}`);
+          
+          // Add Child to Sync Queue
+          await localDb.addToSyncQueue(tableName, 'UPSERT', child);
+          console.log(`[Sync Queue] Task added for ${tableName}`);
+        }
+      }
+
+      // Trigger background sync if online (does not await Supabase directly)
+      if (navigator.onLine) {
+        this.syncEngine.processQueue();
+      }
+
+      return parentData;
+    } catch (error) {
+      console.error(`[Dexie Error] Failed to save audit data for table: ${tableName}. Error:`, error);
+      throw error;
     }
-    const { error } = await supabaseAdmin.from(tableName).delete().eq('id', id);
-    if (error) throw error;
+  }
+
+  async deleteRecord(tableName: string, id: string | number, useAdmin: boolean = false, skipSyncQueue: boolean = false) {
+    // Wait for dynamic schema hydration to complete
+    await localDb.waitForReady();
+    
+    // Delete from local DB first
+    try {
+      let table = localDb.table(tableName);
+      
+      // If table doesn't exist locally, try to refresh schema once
+      if (!table) {
+        console.warn(`[DB] Table ${tableName} not found in local schema. Attempting schema refresh...`);
+        const schema = await schemaService.getSchema();
+        await localDb.hydrateDynamicSchema(schema);
+        table = localDb.table(tableName);
+      }
+
+      if (table) {
+        await table.delete(id.toString());
+      }
+    } catch (e) {
+      console.error(`[DB] Failed to delete from local table ${tableName}:`, e);
+      throw e;
+    }
+
+    if (!skipSyncQueue) {
+      // Add to sync queue
+      await localDb.addToSyncQueue(tableName, 'DELETE', { id });
+
+      // Trigger sync in background
+      if (navigator.onLine) {
+        this.syncEngine.processQueue();
+      }
+    } else {
+      const client = useAdmin ? supabaseAdmin : supabase;
+      const { error } = await client.from(tableName).delete().eq('id', id);
+      if (error) throw error;
+    }
   }
 
   async getUsers(): Promise<User[]> {
-    const data = await this.fetchFullTable('users', 'created_at', false, true);
+    const data = await this.getTableData('users');
     return (data || []).map(u => ({
       id: u.id,
       name: u.name,
@@ -492,9 +705,42 @@ class DBService {
     return data;
   }
 
+  async syncPermissions(userId: string): Promise<void> {
+    if (!navigator.onLine) return;
+    try {
+      console.log(`[Sync] Fetching permissions for user ${userId} from Supabase...`);
+      const { data, error } = await supabase.from('permissions').select('*').eq('user_id', userId);
+      if (error) throw error;
+      
+      if (data && data.length > 0) {
+        // Clear existing local permissions for this user
+        const existing = await localDb.permissions.where('user_id').equals(userId).toArray();
+        for (const p of existing) {
+          await localDb.permissions.delete(p.id);
+        }
+        // Save new permissions locally
+        await localDb.permissions.bulkPut(data);
+        console.log(`[Sync] Saved ${data.length} permissions locally.`);
+      }
+    } catch (error) {
+      console.error('[Sync] Failed to sync permissions:', error);
+    }
+  }
+
+  async checkPermissionLocally(userId: string, screenKey: string, action: string = 'can_view'): Promise<boolean> {
+    try {
+      const permissions = await localDb.permissions.where('user_id').equals(userId).toArray();
+      const perm = permissions.find(p => p.screen_key === screenKey);
+      if (!perm) return false;
+      return !!(perm as any)[action];
+    } catch (error) {
+      console.error('[Auth Guard] Local permission check failed:', error);
+      return false;
+    }
+  }
+
   async getPermissions(userId: string): Promise<Permission[]> {
-    const { data, error } = await supabase.from('permissions').select('*').eq('user_id', userId);
-    if (error) throw error;
+    const data = await this.getTableData('permissions', { user_id: userId });
     return (data || []).map(p => ({
       id: p.id,
       userId: p.user_id,
@@ -512,13 +758,13 @@ class DBService {
 
   async savePermissions(userId: string, permissions: Partial<Permission>[]) {
     // First delete existing permissions for this user to avoid conflicts
-    const { error: deleteError } = await supabaseAdmin.from('permissions').delete().eq('user_id', userId);
-    if (deleteError) {
-      console.error('Error deleting old permissions:', deleteError);
-      throw deleteError;
+    const existing = await this.getTableData('permissions', { user_id: userId });
+    for (const p of existing) {
+      await this.deleteRecord('permissions', p.id);
     }
 
     const payload = permissions.map(p => ({
+      id: crypto.randomUUID(),
       user_id: userId,
       screen_key: p.screenKey,
       can_view: p.canView,
@@ -531,17 +777,14 @@ class DBService {
       can_import_excel: p.canImportExcel
     }));
     
-    const { data, error } = await supabaseAdmin.from('permissions').insert(payload).select();
-    if (error) {
-      console.error('Error inserting new permissions:', error);
-      throw error;
+    for (const p of payload) {
+      await this.saveToTable('permissions', p);
     }
-    if (!data || data.length === 0) throw new Error('Data sync failed for table: permissions');
-    return data;
+    return payload;
   }
 
   async getCustomers(): Promise<Customer[]> {
-    const data = await this.fetchFullTable('customers', 'name', true, false);
+    const data = await this.getTableData('customers');
     return (data || []).map(c => ({
       id: c.id,
       customerNumber: c.customer_number,
@@ -577,8 +820,9 @@ class DBService {
   }
 
   async updateCustomer(id: string, customer: Partial<Customer>) {
-    const { data: existing } = await supabase.from('customers').select('notes').eq('id', id).single();
-    let eNotes: any = {}; try { eNotes = JSON.parse(existing?.notes || '{}'); } catch {}
+    const existing = await this.getTableData('customers', { id });
+    const existingRecord = existing.length > 0 ? existing[0] : null;
+    let eNotes: any = {}; try { eNotes = JSON.parse(existingRecord?.notes || '{}'); } catch {}
     let nNotes: any = {}; try { nNotes = JSON.parse(customer.notes || '{}'); } catch {}
     nNotes['ROW ID'] = eNotes['ROW ID'] || await this.generateRowId();
     const payload = {
@@ -601,6 +845,7 @@ class DBService {
       let nObj: any = {}; try { nObj = JSON.parse(c.notes || '{}'); } catch {}
       if (!nObj['ROW ID']) nObj['ROW ID'] = await this.generateRowId();
       return {
+        id: crypto.randomUUID(),
         customer_number: String(c.customerNumber || ''),
         name: c.name,
         address: c.address,
@@ -611,14 +856,15 @@ class DBService {
         notes: JSON.stringify(nObj)
       };
     }));
-    const { data, error } = await supabase.from('customers').upsert(processed).select();
-    if (error) throw error;
-    if (!data || data.length === 0) throw new Error('Data sync failed for table: customers');
-    return data;
+    
+    for (const p of processed) {
+      await this.saveToTable('customers', p);
+    }
+    return processed;
   }
 
   async getInspections(): Promise<Inspection[]> {
-    const data = await this.fetchFullTable('inspections', 'created_at', false, false);
+    const data = await this.getTableData('inspections');
     return (data || []).map(item => ({
       id: item.id,
       inspectionSerialNumber: item.serial_number,
@@ -746,16 +992,15 @@ class DBService {
   }
 
   async deleteInspection(id: string) {
-    if (!id || id.toString().startsWith('TEMP_')) {
-      console.log(`[DB] Skipping delete for temporary ID: ${id}`);
+    if (!id) {
+      console.log(`[DB] Skipping delete for empty ID`);
       return;
     }
-    const { error } = await supabaseAdmin.from('inspections').delete().eq('id', id);
-    if (error) throw error;
+    await this.deleteRecord('inspections', id);
   }
 
   async getBots() {
-    const data = await this.fetchFullTable('automation_bots', 'created_at', false, true);
+    const data = await this.getTableData('automation_bots');
     return data || [];
   }
 
@@ -864,10 +1109,7 @@ class DBService {
         throw new Error(`User is not an ADMIN (Current Role: ${role || 'None'})`);
       }
 
-      const { error } = await supabaseAdmin.from('automation_bots').delete().eq('id', id);
-      if (error) {
-        throw error;
-      }
+      await this.deleteRecord('automation_bots', id);
     } catch (error: any) {
       throw error;
     }
@@ -887,8 +1129,8 @@ class DBService {
   }
 
   async getFormTemplates(): Promise<FormTemplate[]> {
-    const templates = await this.fetchFullTable('form_templates', 'created_at', true, false);
-    const fields = await this.fetchFullTable('form_fields', 'order_index', true, false);
+    const templates = await this.getTableData('form_templates');
+    const fields = await this.getTableData('form_fields');
 
     return templates.map(t => ({
       id: t.id,
@@ -936,49 +1178,45 @@ class DBService {
 
   async createFormTemplate(template: { name: string; formKey: string; description: string; tableName?: string }) {
     const payload = {
+      id: crypto.randomUUID(),
       name: template.name,
       form_key: template.formKey,
       description: template.description,
       table_name: template.tableName,
       is_active: true
     };
-    const { data, error } = await supabase.from('form_templates').insert([payload]).select().single();
-    if (error) throw error;
-    return data;
+    return await this.saveToTable('form_templates', payload);
   }
 
   async deleteFormTemplate(id: string) {
     // Delete fields first
-    await supabase.from('form_fields').delete().eq('template_id', id);
-    const { error } = await supabase.from('form_templates').delete().eq('id', id);
-    if (error) throw error;
+    const fields = await this.getTableData('form_fields', { template_id: id });
+    for (const field of fields) {
+      await this.deleteRecord('form_fields', field.id);
+    }
+    await this.deleteRecord('form_templates', id);
   }
 
   async updateFormTemplate(id: string, updates: Partial<FormTemplate>) {
-    const payload: any = {};
+    const payload: any = { id };
     if (updates.name !== undefined) payload.name = updates.name;
     if (updates.description !== undefined) payload.description = updates.description;
     if (updates.isActive !== undefined) payload.is_active = updates.isActive;
     if (updates.tableName !== undefined) payload.table_name = updates.tableName;
     if (updates.navigation_config !== undefined) payload.navigation_config = updates.navigation_config;
 
-    const { data, error } = await supabase.from('form_templates').update(payload).eq('id', id).select();
-    if (error) {
-      console.error(`Error updating form_template ${id}:`, error.message);
-      throw error;
-    }
-    if (!data || data.length === 0) throw new Error(`Update failed for form_template: ${id}`);
-    return data[0];
+    return await this.saveToTable('form_templates', payload);
   }
 
   async saveFormFields(templateId: string, fields: FormField[], deletedIds: string[]) {
     try {
       if (deletedIds.length > 0) {
-        const actualDeletedIds = deletedIds.filter(id => !id.startsWith('temp_'));
-        if (actualDeletedIds.length > 0) await supabase.from('form_fields').delete().in('id', actualDeletedIds);
+        for (const id of deletedIds) {
+          await this.deleteRecord('form_fields', id);
+        }
       }
       const upsertPayload = fields.map(f => ({
-        ...(f.id.startsWith('temp_') ? {} : { id: f.id }),
+        id: f.id,
         template_id: templateId,
         field_key: f.fieldKey,
         label: f.label,
@@ -1002,10 +1240,8 @@ class DBService {
           isHidden: !!f.isHidden
         }
       }));
-      if (upsertPayload.length > 0) {
-        const { data, error } = await supabase.from('form_fields').upsert(upsertPayload).select();
-        if (error) throw error;
-        if (!data || data.length === 0) throw new Error('Data sync failed for table: form_fields');
+      for (const payload of upsertPayload) {
+        await this.saveToTable('form_fields', payload);
       }
     } catch (err) { throw err; }
   }
@@ -1332,6 +1568,12 @@ class DBService {
   }
 
   async triggerBots(tableName: string, recordId: string, eventType: 'ADDS' | 'UPDATES' | 'DELETES' = 'ADDS') {
+    // OFFLINE GUARANTEE: No API calls or automation checks while offline
+    if (!navigator.onLine) {
+      console.log(`[Automation] Device is offline. Skipping bot trigger for ${tableName}. Bot will run after sync.`);
+      return;
+    }
+
     console.log(`[Automation] Checking for bots on table: ${tableName}, Event: ${eventType}, Record: ${recordId}`);
     
     try {
@@ -1532,7 +1774,7 @@ class DBService {
   }
 
   async getAuditLogs(): Promise<AuditLog[]> {
-    const data = await this.fetchFullTable('audit_logs', 'created_at', false, true);
+    const data = await this.getTableData('audit_logs');
     return (data || []).map(log => ({
       id: log.id,
       created_at: log.created_at,
@@ -1546,40 +1788,110 @@ class DBService {
   }
 
   async getInspectionDrafts(userId: string) {
-    const { data, error } = await supabase
-      .from('inspection_drafts')
-      .select('*')
-      .eq('user_id', userId);
-    if (error) throw error;
-    return data;
+    return await this.getTableData('inspection_drafts', { user_id: userId });
   }
 
   async saveInspectionDraft(draft: any) {
     const cleanDraft = { ...draft };
-    if (cleanDraft.id && typeof cleanDraft.id === 'string' && cleanDraft.id.startsWith('TEMP_')) {
-      delete cleanDraft.id;
-    }
-    const { error } = await supabase
-      .from('inspection_drafts')
-      .upsert(cleanDraft);
-    if (error) throw error;
+    await this.saveToTable('inspection_drafts', cleanDraft);
   }
 
   async deleteInspectionDraft(id: string) {
-    if (!id || id.toString().startsWith('TEMP_')) {
-      console.log(`[DB] Skipping delete for temporary ID: ${id}`);
+    if (!id) {
+      console.log(`[DB] Skipping delete for empty ID`);
       return;
     }
-    const { error } = await supabase
-      .from('inspection_drafts')
-      .delete()
-      .eq('id', id);
-    if (error) throw error;
+    await this.deleteRecord('inspection_drafts', id);
+  }
+
+  async getTableData(tableName: string, filters?: { [key: string]: any }): Promise<any[]> {
+    try {
+      // Wait for dynamic schema hydration to complete
+      await localDb.waitForReady();
+      
+      let localData: any[] = [];
+      
+      // 1. Try fetching from localDb first
+      try {
+        const table = localDb.table(tableName);
+        if (table) {
+          if (filters && Object.keys(filters).length > 0) {
+            // Apply simple equality filters (e.g., parent_id)
+            const keys = Object.keys(filters);
+            if (keys.length === 1) {
+              const key = keys[0];
+              localData = await table.where(key).equals(filters[key]).toArray();
+            } else {
+              // Fallback to JS filtering for multiple conditions
+              localData = await table.filter(item => {
+                return Object.entries(filters).every(([k, v]) => item[k] === v);
+              }).toArray();
+            }
+          } else {
+            localData = await table.toArray();
+          }
+        } else {
+          console.warn(`[DBService] Table ${tableName} not found in local schema.`);
+          return [];
+        }
+      } catch (e) {
+        console.error(`[DBService] Error reading table ${tableName}:`, e);
+        return [];
+      }
+
+      // 2. Smart Fallback Logic: Return local data if it exists
+      if (localData.length > 0) {
+        console.log(`[Dexie Read] Fetched ${localData.length} records from ${tableName} locally.`);
+        return localData;
+      }
+
+      // 3. If empty and online, fetch from Supabase and seed Dexie
+      if (navigator.onLine) {
+        console.log(`[Smart Fallback] Local DB empty for ${tableName}. Fetching from Supabase...`);
+        let query = supabase.from(tableName).select('*');
+        if (filters) {
+          Object.entries(filters).forEach(([k, v]) => {
+            query = query.eq(k, v);
+          });
+        }
+        const { data, error } = await query;
+        
+        if (error) {
+          console.error(`[Supabase Error] Failed to fetch ${tableName}:`, error);
+          return [];
+        }
+        
+        if (data && data.length > 0) {
+          // Seed Dexie for future offline use
+          try {
+            const table = localDb.table(tableName);
+            if (table) {
+              await table.bulkPut(data);
+            }
+          } catch (e) {
+            console.error(`[Dexie Seed] Failed to seed ${tableName}:`, e);
+          }
+          console.log(`[Dexie Seed] Saved ${data.length} records to ${tableName} for offline use.`);
+          return data;
+        }
+      }
+
+      // 4. If offline or no data in Supabase, return empty array
+      return [];
+    } catch (error) {
+      console.error(`[Dexie Error] Failed to getTableData for ${tableName}:`, error);
+      return [];
+    }
+  }
+
+  async getLookupData(tableName: string): Promise<any[]> {
+    // Wrapper around getTableData for reference data (like Customers or FormTemplates)
+    return this.getTableData(tableName);
   }
 
   async getChildInspections(parentId: string, parentTable?: string) {
-    if (!parentId || parentId.toString().startsWith('TEMP_')) {
-      console.log(`[DB] Skipping child fetch for temporary parent ID: ${parentId}`);
+    if (!parentId) {
+      console.log(`[DB] Skipping child fetch for empty parent ID`);
       return [];
     }
     // Basic implementation to fetch child records if they exist
@@ -1587,8 +1899,8 @@ class DBService {
   }
 
   async getInspectionByRowId(rowId: string, tableName: string = 'inspections') {
-    if (!rowId || rowId.toString().startsWith('TEMP_')) {
-      console.log(`[DB] Skipping fetch for temporary ID: ${rowId}`);
+    if (!rowId) {
+      console.log(`[DB] Skipping fetch for empty ID`);
       return null;
     }
     const { data, error } = await supabase

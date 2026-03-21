@@ -23,8 +23,8 @@ type TaskType = 'EMAIL' | 'SMS' | 'SET_VALUES' | 'EXECUTE_ROWS' | 'ADD_ROW' | 'F
 interface BotTask {
   type: TaskType;
   // Email
-  to?: string; cc?: string; bcc?: string; subject?: string; body?: string; attachment?: boolean;
-  googleDocTemplateId?: string;
+  to?: string; cc?: string; bcc?: string; subject?: string; body?: string; attachment?: boolean; attachmentName?: string;
+  googleDocTemplateId?: string; templateId?: string;
   // SMS
   message?: string;
   // Set Values / Add Row
@@ -84,7 +84,7 @@ const TriggersPage: React.FC<TriggersPageProps> = ({ user }) => {
   const canDelete = hasPermission('triggers', 'canDelete');
   const canCreate = hasPermission('triggers', 'canCreate');
 
-  const [activeTab, setActiveTab] = useState<'bots' | 'history'>('bots');
+  const [activeTab, setActiveTab] = useState<'bots' | 'history' | 'schema'>('bots');
   const [isWizardOpen, setIsWizardOpen] = useState(false);
   const [tables, setTables] = useState<{ id: string; label: string }[]>([]);
   const [tableColumns, setTableColumns] = useState<{ column_name: string; data_type: string }[]>([]);
@@ -411,7 +411,7 @@ const TriggersPage: React.FC<TriggersPageProps> = ({ user }) => {
 
   const openNewBotWizard = () => {
     setEditingBot({
-      id: `temp_${Date.now()}`,
+      id: crypto.randomUUID(),
       name: 'בוט חדש',
       isActive: true,
       lastExecuted: null,
@@ -492,23 +492,12 @@ const TriggersPage: React.FC<TriggersPageProps> = ({ user }) => {
     if (!window.confirm('האם אתה בטוח שברצונך למחוק בוט זה?')) return;
 
     try {
-      // 1. Verify Authentication
-      const { data: { session } } = await supabase.auth.getSession();
-      const user = session?.user;
-      if (!user) throw new Error('User not authenticated');
-
       if (!canDelete) {
         alert('שגיאת הרשאה: אין לך הרשאה למחוק בוטים.');
         return;
       }
 
-      // 2. Proceed to delete from public.automation_bots using the bot's id
-      const { error: deleteError } = await supabaseAdmin
-        .from('automation_bots')
-        .delete()
-        .eq('id', id);
-
-      if (deleteError) throw deleteError;
+      await dbService.deleteBot(id);
       
       // 3. Update local React state immediately
       setBots(prev => prev.filter(b => b.id !== id));

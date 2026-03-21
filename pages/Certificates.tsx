@@ -214,7 +214,8 @@ const Certificates: React.FC<CertificatesProps> = ({ user }) => {
 
       // TRIGGER AUTOMATION BOTS
       console.log(`[Automation] Triggering bots for inspections with ID: ${parentFriendlyId}`);
-      dbService.triggerBots('inspections', parentFriendlyId, 'ADDS');
+      // triggerBots is now handled by SyncEngine after successful sync
+      // dbService.triggerBots('inspections', parentFriendlyId, 'ADDS');
 
       const isFireSafety = template?.name?.includes('כיבויים');
       if (isFireSafety) {

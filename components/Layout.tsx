@@ -15,10 +15,15 @@ import {
   Menu,
   X,
   Zap,
-  Info
+  Info,
+  Wifi,
+  WifiOff,
+  RefreshCw,
+  CloudSync
 } from 'lucide-react';
 import { User, UserRole } from '../types';
 import { usePermissions } from '../src/context/PermissionContext';
+import { useSync } from '../src/context/SyncContext';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -52,50 +57,125 @@ const Layout: React.FC<LayoutProps> = ({ children, user, onLogout, activeScreen,
     setIsMobileMenuOpen(false);
   };
 
-  const SidebarContent = () => (
-    <div className="flex flex-col h-full bg-slate-900 text-white">
-      <div className="p-8 text-center border-b border-slate-800 flex items-center justify-between md:justify-center">
-        <div>
-          <h1 className="text-3xl font-black text-blue-500 tracking-tighter">FireGuard</h1>
-          <p className="text-[10px] text-slate-400 mt-1 font-bold uppercase tracking-widest">מערכת ניהול גילוי אש</p>
-        </div>
-        <button className="md:hidden text-slate-300" onClick={() => setIsMobileMenuOpen(false)}>
-          <X size={24} />
-        </button>
-      </div>
-      
-      <nav className="flex-1 mt-6 overflow-y-auto scrollbar-none">
-        {visibleMenuItems.map(item => (
-          <button
-            key={item.id}
-            onClick={() => handleNavigation(item.id)}
-            className={`w-full flex items-center px-8 py-4 transition-all duration-200 group ${
-              activeScreen === item.id 
-                ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/20' 
-                : 'text-slate-400 hover:bg-slate-800 hover:text-white'
-            }`}
-          >
-            <div className={`transition-transform duration-200 ${activeScreen === item.id ? 'scale-110' : 'group-hover:scale-110'}`}>
-              {item.icon}
-            </div>
-            <span className={`mr-4 font-bold text-sm transition-all ${activeScreen === item.id ? 'translate-x-1' : ''}`}>
-              {item.label}
-            </span>
-          </button>
-        ))}
-      </nav>
+  const SidebarContent = () => {
+  const { isOnline: syncOnline, pendingCount, isSyncing, isRetrying, syncStatus, triggerSync, lastSyncTime } = useSync();
+  
+  // הוספת Listener מקומי כדי להבטיח תגובה מיידית ב-UI
+  const [localOnline, setLocalOnline] = React.useState(navigator.onLine);
 
-      <div className="p-6 border-t border-slate-700/50">
-        <button
-          onClick={onLogout}
-          className="w-full flex items-center px-6 py-4 text-slate-400 hover:bg-red-500/10 hover:text-red-500 rounded-2xl transition-all font-bold group"
-        >
-          <LogOut size={20} className="ml-4 transition-transform group-hover:-translate-x-1" />
-          <span>יציאה</span>
-        </button>
+  React.useEffect(() => {
+    const handleStatus = () => setLocalOnline(navigator.onLine);
+    window.addEventListener('online', handleStatus);
+    window.addEventListener('offline', handleStatus);
+    return () => {
+      window.removeEventListener('online', handleStatus);
+      window.removeEventListener('offline', handleStatus);
+    };
+  }, []);
+
+  // אנחנו נשתמש ב-AND לוגי: גם שהדפדפן מדווח אונליין וגם שהסינכרון מדווח אונליין
+  const isOnline = localOnline && syncOnline;
+
+  const getStatusMessage = () => {
+    switch (syncStatus) {
+      case 'waiting_for_auth': return 'ממתין לחיבור...';
+      case 'syncing': return 'מסנכרן...';
+      case 'error': return 'שגיאת סנכרון';
+      default: return isOnline ? 'מחובר' : 'לא מחובר';
+    }
+  };
+
+  return (
+    
+      <div className="flex flex-col h-full bg-slate-900 text-white">
+        <div className="p-6 text-center border-b border-slate-800">
+          <div className="flex items-center justify-between md:justify-center mb-4">
+            <div>
+              <h1 className="text-3xl font-black text-blue-500 tracking-tighter">FireGuard</h1>
+              <p className="text-[10px] text-slate-400 mt-1 font-bold uppercase tracking-widest">מערכת ניהול גילוי אש</p>
+            </div>
+            <button className="md:hidden text-slate-300" onClick={() => setIsMobileMenuOpen(false)}>
+              <X size={24} />
+            </button>
+          </div>
+
+          {/* Sync Status at the top */}
+          <div className="flex flex-col gap-2">
+            <div className={`flex items-center justify-between px-3 py-2 rounded-lg transition-colors ${
+              isOnline && syncStatus !== 'waiting_for_auth' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-rose-500/10 text-rose-500'
+            }`}>
+              <div className="flex items-center gap-2">
+                {isOnline && syncStatus !== 'waiting_for_auth' ? <Wifi size={14} /> : <WifiOff size={14} />}
+                <span className="text-[10px] font-bold uppercase tracking-wider">{getStatusMessage()}</span>
+              </div>
+              
+              {isOnline && (
+                <button 
+                  onClick={() => triggerSync()}
+                  disabled={isSyncing}
+                  className={`p-1 hover:bg-emerald-500/20 rounded-full transition-transform ${isSyncing ? 'animate-spin' : ''}`}
+                  title="סנכרן עכשיו"
+                >
+                  <RefreshCw size={14} />
+                </button>
+              )}
+            </div>
+            {lastSyncTime && (
+              <div className="text-[9px] text-slate-500 text-center">
+                סנכרון אחרון: {lastSyncTime.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' })}
+              </div>
+            )}
+
+            {isRetrying && (
+              <div className="bg-rose-500/10 text-rose-500 px-3 py-2 rounded-lg flex items-center gap-2 animate-pulse border border-rose-500/20">
+                <RefreshCw size={14} className="animate-spin" />
+                <span className="text-[10px] font-medium">מנסה שוב... (שגיאת רשת)</span>
+              </div>
+            )}
+
+            {!isRetrying && pendingCount > 0 && (
+              <div className="bg-amber-500/10 text-amber-500 px-3 py-2 rounded-lg flex items-center gap-2 animate-pulse border border-amber-500/20">
+                <CloudSync size={14} />
+                <span className="text-[10px] font-medium">{pendingCount} שינויים ממתינים</span>
+              </div>
+            )}
+          </div>
+        </div>
+        
+        <nav className="flex-1 mt-4 overflow-y-auto scrollbar-none">
+          {visibleMenuItems.map(item => (
+            <button
+              key={item.id}
+              onClick={() => handleNavigation(item.id)}
+              className={`w-full flex items-center px-8 py-4 transition-all duration-200 group ${
+                activeScreen === item.id 
+                  ? 'bg-blue-600 text-white shadow-lg shadow-blue-900/20' 
+                  : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+              }`}
+            >
+              <div className={`transition-transform duration-200 ${activeScreen === item.id ? 'scale-110' : 'group-hover:scale-110'}`}>
+                {item.icon}
+              </div>
+              <span className={`mr-4 font-bold text-sm transition-all ${activeScreen === item.id ? 'translate-x-1' : ''}`}>
+                {item.label}
+              </span>
+            </button>
+          ))}
+        </nav>
+
+        {/* Logout button back at the bottom */}
+        <div className="p-6 border-t border-slate-800/50">
+          <button
+            onClick={onLogout}
+            className="w-full flex items-center px-6 py-4 text-slate-400 hover:bg-red-500/10 hover:text-red-500 rounded-2xl transition-all font-bold group"
+          >
+            <LogOut size={20} className="ml-4 transition-transform group-hover:-translate-x-1" />
+            <span>יציאה</span>
+          </button>
+        </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   return (
     <div className="flex h-screen bg-gray-100 overflow-hidden" dir="rtl">

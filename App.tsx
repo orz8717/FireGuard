@@ -6,8 +6,10 @@ import Login from './pages/Login';
 import Register from './pages/Register';
 import Layout from './components/Layout';
 import { PermissionProvider, usePermissions } from './src/context/PermissionContext';
-import { SyncProvider } from './src/context/SyncContext';
-import { AlertCircle } from 'lucide-react';
+import { SyncProvider, useSync } from './src/context/SyncContext';
+import { dbService } from './services/dbService';
+import { pullService } from './services/pullService';
+import { AlertCircle, Wifi, WifiOff, RefreshCw, CloudSync } from 'lucide-react';
 import { APP_SCREENS } from './src/constants/screens';
 
 const AppContent: React.FC<{ user: User | null, setUser: (u: User | null) => void }> = ({ user, setUser }) => {
@@ -16,41 +18,53 @@ const AppContent: React.FC<{ user: User | null, setUser: (u: User | null) => voi
   const [permissionError, setPermissionError] = React.useState<string | null>(null);
   const { hasPermission, loading, refreshPermissions } = usePermissions();
 
-  // Refresh permissions on every screen change to ensure real-time enforcement
+  // Hydrate metadata and sync permissions on login
+  React.useEffect(() => {
+    if (user) {
+      dbService.hydrateMetadata(user.name);
+      dbService.syncPermissions(user.id).then(() => {
+        refreshPermissions(true);
+      });
+      pullService.startPeriodicSync();
+    }
+  }, [user?.id]);
+
+  // Check permissions on every screen change to ensure real-time enforcement
   React.useEffect(() => {
     const checkPermissions = async () => {
       if (user) {
-        // Perform background check without blocking UI
-        const freshPermissions = await refreshPermissions(true);
-        
-        // After refresh, verify if the user still has access to the current screen
         const screenKey = activeScreen === 'signup' ? 'users' : activeScreen;
         
         // Dashboard is always accessible
         if (screenKey === 'dashboard') return;
 
-        const perm = freshPermissions.find(p => p.screenKey === screenKey);
-        const canView = perm ? !!perm.canView : false;
+        // Admin override
+        if (user.email === 'orz7178@gmail.com' && screenKey === 'users') return;
+
+        // Use local check for immediate offline support
+        const canView = await dbService.checkPermissionLocally(user.id, screenKey, 'can_view');
         
         // If access is lost
         if (!canView) {
           setPermissionError("הגישה נדחתה. הינך מועבר לעמוד אחר שיש לך הרשאה.");
           
           // Wait a bit to show the message then redirect
-          setTimeout(() => {
+          setTimeout(async () => {
             setPermissionError(null);
             
-            // Find first available screen from fresh data using central config
-            const firstAvailable = APP_SCREENS.find(s => {
-              if (s.key === 'dashboard') return true;
-              const p = freshPermissions.find(p => p.screenKey === s.key);
-              return p ? !!p.canView : false;
-            })?.key;
+            // Find first available screen from local permissions
+            let firstAvailable = 'dashboard';
+            for (const s of APP_SCREENS) {
+              if (s.key === 'dashboard') continue;
+              const hasAccess = await dbService.checkPermissionLocally(user.id, s.key, 'can_view');
+              if (hasAccess) {
+                firstAvailable = s.key;
+                break;
+              }
+            }
             
-            if (firstAvailable && firstAvailable !== activeScreen) {
+            if (firstAvailable !== activeScreen) {
               setActiveScreen(firstAvailable);
-            } else if (!firstAvailable) {
-              setActiveScreen('dashboard');
             }
           }, 3000);
         }

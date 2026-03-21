@@ -723,8 +723,10 @@ const DynamicForm: React.FC<DynamicFormProps> = ({
     const triggerData: Record<string, any> = {};
     Object.keys(formData).forEach(key => {
       const field = fieldsRef.current.find(f => f.fieldKey === key);
-      // We trigger calculations on any non-calculated field OR core system fields
-      if (!field?.calculationFormula || key.toLowerCase().endsWith('id')) {
+      // CRITICAL: We trigger calculations ONLY on fields that are NOT calculated.
+      // If a field is calculated, it should NOT be a trigger, even if it ends with 'id'.
+      // This prevents infinite loops where a formula updates a field that triggers itself.
+      if (!field?.calculationFormula) {
         triggerData[key] = formData[key];
       }
     });
@@ -1092,7 +1094,9 @@ const DynamicForm: React.FC<DynamicFormProps> = ({
                 </thead>
                 <tbody className="divide-y divide-slate-50">
                   {(() => {
-                    const combined = [...localSummary, ...childRecords.map(r => ({ ...r.data, id: r.id, createdAt: r.created_at, serial_number: r.inspectionSerialNumber || r.serial_number }))];
+                    const safeLocalSummary = Array.isArray(localSummary) ? localSummary : [];
+                    const safeChildRecords = Array.isArray(childRecords) ? childRecords : [];
+                    const combined = [...safeLocalSummary, ...safeChildRecords.map(r => ({ ...r.data, id: r.id, createdAt: r.created_at, serial_number: r.inspectionSerialNumber || r.serial_number }))];
                     const unique = Array.from(new Map(combined.map(item => [item.id, item])).values());
                     return unique.sort((a,b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()).map((record, idx) => (
                       <tr key={record.id || idx} className="hover:bg-slate-50 transition-colors">

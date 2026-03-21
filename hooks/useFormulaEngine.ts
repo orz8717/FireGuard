@@ -1,5 +1,5 @@
 import React from 'react';
-import { supabase } from '../services/supabaseClient';
+import { dbService } from '../services/dbService';
 
 export function useFormulaEngine(contextData: Record<string, any[]>, currentUser: any) {
   const lookupCache = React.useRef<Map<string, { value: any; timestamp: number }>>(new Map());
@@ -111,12 +111,9 @@ export function useFormulaEngine(contextData: Record<string, any[]>, currentUser
             const cached = lookupCache.current.get(cacheKey);
             if (cached && (Date.now() - cached.timestamp < 10000)) return cached.value;
 
-            const { count, error } = await supabase
-              .from(listOrTable)
-              .select('*', { count: 'exact', head: true })
-              .eq(optionalCol, searchVal);
-
-            const exists = !error && (count || 0) > 0;
+            const data = await dbService.getTableData(listOrTable, { [optionalCol]: searchVal });
+            const exists = data && data.length > 0;
+            
             lookupCache.current.set(cacheKey, { value: exists, timestamp: Date.now() });
             return exists;
           }
@@ -170,14 +167,10 @@ export function useFormulaEngine(contextData: Record<string, any[]>, currentUser
           }
 
           // 3. Supabase Fallback (Network)
-          const { data, error } = await supabase
-            .from(tName)
-            .select(rCol)
-            .eq(iCol, sVal)
-            .maybeSingle();
-
-          if (error) throw error;
-          const result = data ? data[rCol] : null;
+          const data = await dbService.getTableData(tName, { [iCol]: sVal });
+          const row = data && data.length > 0 ? data[0] : null;
+          const result = row ? row[rCol] : null;
+          
           lookupCache.current.set(cacheKey, { value: result, timestamp: Date.now() });
           return result;
         } catch (e) {

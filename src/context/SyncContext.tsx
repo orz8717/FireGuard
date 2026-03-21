@@ -1,32 +1,89 @@
-
-import React, { createContext, useContext, useState, useCallback } from 'react';
+import React, { createContext, useContext, useEffect, useState } from 'react';
 import { dbService } from '../../services/dbService';
+import { syncEngine, SyncStatus } from '../../services/syncEngine';
 
 interface SyncContextType {
+  isOnline: boolean;
+  pendingCount: number;
   isSyncing: boolean;
-  lastSync: string | null;
-  syncData: (userName: string, parentTable?: string, childTable?: string) => Promise<any>;
+  isRetrying: boolean;
+  syncStatus: SyncStatus;
+  lastSyncTime: Date | null;
+  triggerSync: () => Promise<void>;
+  syncData: (userName: string, parentTableName?: string, childTableName?: string) => Promise<Record<string, any[]>>;
 }
 
 const SyncContext = createContext<SyncContextType | undefined>(undefined);
 
 export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [pendingCount, setPendingCount] = useState(0);
   const [isSyncing, setIsSyncing] = useState(false);
-  const [lastSync, setLastSync] = useState<string | null>(null);
+  const [isRetrying, setIsRetrying] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>(syncEngine.getStatus());
+  const [lastSyncTime, setLastSyncTime] = useState<Date | null>(null);
 
-  const syncData = useCallback(async (userName: string, parentTable?: string, childTable?: string) => {
+  useEffect(() => {
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    const unsubscribeStatus = syncEngine.onStatusChange((status) => {
+      setSyncStatus(status);
+      setIsSyncing(status === 'syncing');
+    });
+
+    // Initial pull
+    syncEngine.pullLatestChanges();
+
+    const interval = setInterval(async () => {
+      const count = await syncEngine.getPendingCount();
+      const retryingCount = await syncEngine.getRetryingCount();
+      setPendingCount(count);
+      setIsRetrying(retryingCount > 0);
+      
+      // Periodic pull
+      if (navigator.onLine) {
+        await syncEngine.pullLatestChanges();
+        setLastSyncTime(new Date());
+      }
+    }, 30000); // 30 seconds for more frequent updates
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+      unsubscribeStatus();
+      clearInterval(interval);
+    };
+  }, []);
+
+  const triggerSync = async () => {
+    if (!isOnline || isSyncing) return;
     setIsSyncing(true);
     try {
-      const data = await dbService.syncData(userName, parentTable, childTable);
-      setLastSync(new Date().toISOString());
-      return data;
+      await syncEngine.processQueue();
+      setLastSyncTime(new Date());
     } finally {
       setIsSyncing(false);
     }
-  }, []);
+  };
+
+  const syncData = async (userName: string, parentTableName?: string, childTableName?: string) => {
+    if (!isOnline || isSyncing) return {};
+    setIsSyncing(true);
+    try {
+      const result = await dbService.syncData(userName, parentTableName, childTableName);
+      setLastSyncTime(new Date());
+      return result;
+    } finally {
+      setIsSyncing(false);
+    }
+  };
 
   return (
-    <SyncContext.Provider value={{ isSyncing, lastSync, syncData }}>
+    <SyncContext.Provider value={{ isOnline, pendingCount, isSyncing, isRetrying, syncStatus, lastSyncTime, triggerSync, syncData }}>
       {children}
     </SyncContext.Provider>
   );

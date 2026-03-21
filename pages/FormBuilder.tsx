@@ -74,7 +74,7 @@ const FieldRow = React.memo(({
   canDelete: boolean;
   moveField: (index: number, direction: 'up' | 'down') => void;
   setEditingField: (field: FormField) => void;
-  setEditTab: (tab: string) => void;
+  setEditTab: (tab: 'general' | 'logic' | 'options' | 'preview') => void;
   localFieldsLength: number;
   onDelete: (e: React.MouseEvent, field: FormField) => void;
 }) => {
@@ -632,7 +632,7 @@ const FormBuilder: React.FC<FormBuilderProps> = ({ user }) => {
           });
         } else {
           finalFields.push({
-            id: `temp_field_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+            id: crypto.randomUUID(),
             formTemplateId: selectedTemplateId!,
             fieldKey: key,
             label: key,
@@ -661,7 +661,7 @@ const FormBuilder: React.FC<FormBuilderProps> = ({ user }) => {
           });
         } else {
           finalFields.push({
-            id: `temp_vfield_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+            id: crypto.randomUUID(),
             formTemplateId: selectedTemplateId!,
             fieldKey: key,
             label: key,
@@ -734,9 +734,7 @@ const FormBuilder: React.FC<FormBuilderProps> = ({ user }) => {
   const handleDeleteField = React.useCallback((e: React.MouseEvent, field: FormField) => {
     e.stopPropagation();
     setLocalFields(prev => prev.filter(item => item.id !== field.id));
-    if (!field.id.startsWith('temp_')) {
-      setDeletedFieldIds(prev => [...prev, field.id]);
-    }
+    setDeletedFieldIds(prev => [...prev, field.id]);
     setHasChanges(true);
   }, []);
 
@@ -862,13 +860,13 @@ const FormBuilder: React.FC<FormBuilderProps> = ({ user }) => {
   const previewFields = React.useMemo(() => {
     const ef = editingField;
     const current = ef ? localFields.map(f => (f.id === ef.id ? ef : f)) : localFields;
-    const customerOptions = customers.map(c => ({ value: c.id, label: `${c.name} (${c.customerNumber || c.customer_number})` }));
+    const customerOptions = customers.map(c => ({ value: c.id, label: `${c.name} (${c.customerNumber})` }));
     return [{ id: 'sys_customer', fieldKey: 'customerId', label: 'בחר לקוח', fieldType: FieldType.SELECT, isRequired: true, orderIndex: -100, options: customerOptions } as any, ...current].sort((a,b) => (a.orderIndex || 0) - (b.orderIndex || 0));
   }, [localFields, editingField, customers]);
 
   const previewContext = React.useMemo(() => ({
     ...dynamicTableData,
-    Customers: customers.map(c => ({ ...JSON.parse(c.notes || '{}'), id: c.id, customer_number: c.customer_number || c.customerNumber, name: c.name, address: c.address, city: c.city })),
+    Customers: customers.map(c => ({ ...JSON.parse(c.notes || '{}'), id: c.id, customerNumber: c.customerNumber, name: c.name, address: c.address, city: c.city })),
     Users: users.map(u => ({ id: u.id, name: u.name, email: u.email, role: u.role }))
   }), [customers, users, dynamicTableData]);
 
@@ -957,7 +955,7 @@ const FormBuilder: React.FC<FormBuilderProps> = ({ user }) => {
               </div>
               <div className="flex flex-wrap gap-2 w-full md:w-auto">
                 <button onClick={() => handleMirrorSync()} className="flex-1 md:flex-none px-2 md:px-4 py-2 bg-emerald-50 text-emerald-700 border border-emerald-100 rounded-lg md:rounded-xl hover:bg-emerald-100 font-black text-[10px] md:text-xs transition-all min-h-[36px] md:min-h-[44px] flex items-center justify-center gap-1.5 md:gap-2"><ArrowRightLeft size={14} className="md:w-4 md:h-4" /> <span className="hidden sm:inline">Mirror Sync</span></button>
-                <button onClick={() => { const max = Math.max(...localFields.map(f => f.orderIndex || 0), -1); const n: any = { id: `temp_${Date.now()}`, fieldKey: `f_${localFields.length+1}`, label: 'שדה חדש', fieldType: FieldType.TEXT, orderIndex: max+1, isRequired: false, isVirtual: false }; setLocalFields([...localFields, n]); setHasChanges(true); setEditingField(n); }} className="flex-1 md:flex-none px-2 md:px-4 py-2 bg-blue-50 text-blue-700 border border-blue-100 rounded-lg md:rounded-xl font-black text-[10px] md:text-xs hover:bg-blue-100 min-h-[36px] md:min-h-[44px] flex items-center justify-center gap-1.5 md:gap-2"><Plus size={14} className="md:w-4 md:h-4" /> <span className="hidden sm:inline">הוספת שדה</span></button>
+                <button onClick={() => { const max = Math.max(...localFields.map(f => f.orderIndex || 0), -1); const n: any = { id: crypto.randomUUID(), fieldKey: `f_${localFields.length+1}`, label: 'שדה חדש', fieldType: FieldType.TEXT, orderIndex: max+1, isRequired: false, isVirtual: false }; setLocalFields([...localFields, n]); setHasChanges(true); setEditingField(n); }} className="flex-1 md:flex-none px-2 md:px-4 py-2 bg-blue-50 text-blue-700 border border-blue-100 rounded-lg md:rounded-xl font-black text-[10px] md:text-xs hover:bg-blue-100 min-h-[36px] md:min-h-[44px] flex items-center justify-center gap-1.5 md:gap-2"><Plus size={14} className="md:w-4 md:h-4" /> <span className="hidden sm:inline">הוספת שדה</span></button>
                 <button onClick={handleSaveForm} disabled={!hasChanges || saving} className={`flex-1 md:flex-none flex items-center justify-center gap-1.5 md:gap-2 px-4 md:px-6 py-2 rounded-lg md:rounded-xl font-black text-xs md:text-sm transition-all shadow-lg min-h-[36px] md:min-h-[44px] ${hasChanges ? 'bg-blue-600 text-white shadow-blue-200' : 'bg-slate-100 text-slate-400'}`}> {saving ? <Loader2 size={16} className="md:w-4 md:h-4 animate-spin" /> : <Save size={16} className="md:w-4 md:h-4" />} שמור </button>
               </div>
             </div>

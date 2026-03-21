@@ -66,16 +66,13 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
 
   const loadDrafts = async () => {
     try {
-      const { data, error } = await supabase
-        .from('inspection_drafts')
-        .select('*')
-        .eq('user_id', user.id);
+      const data = await dbService.getInspectionDrafts(user.id);
         
-      let supabaseDrafts: any[] = [];
-      if (!error && data) {
-        supabaseDrafts = data
+      let allDrafts: any[] = [];
+      if (data) {
+        allDrafts = data
           .map(d => ({
-            id: d.id, // Supabase UUID
+            id: d.id || d.ROWID, // Supabase UUID or local ROWID
             templateId: d.table_name,
             templateName: d.data?.templateName || 'טיוטה',
             customerName: d.data?.customerName || 'לקוח לא ידוע',
@@ -87,8 +84,8 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
           .filter(d => !d.templateName.startsWith('עדכון טבלת'));
       }
 
-      // Only use Supabase drafts to prevent duplicates
-      const allDrafts = supabaseDrafts.sort((a: any, b: any) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
+      // Only use local drafts to prevent duplicates
+      allDrafts = allDrafts.sort((a: any, b: any) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
       setDrafts(allDrafts);
     } catch (err) {
       console.error('Error loading drafts:', err);
@@ -127,7 +124,7 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
         localStorage.removeItem('pendingParentRowId');
         localStorage.removeItem('parentFormData');
         
-        const tempId = `TEMP_${Math.random().toString(36).substr(2, 9).toUpperCase()}`;
+        const tempId = crypto.randomUUID();
         localStorage.setItem('pendingParentRowId', tempId);
         
         // Inject temp ID into ROWID field
@@ -155,27 +152,26 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
     // Check Supabase drafts in state
     draft = drafts.find(d => d.id === draftId);
     
-    // If not found in state, fetch from Supabase directly
+    // If not found in state, fetch from localDb directly
     if (!draft) {
       try {
-        let query = supabase.from('inspection_drafts').select('*').eq('user_id', user.id);
+        const allDrafts = await dbService.getInspectionDrafts(user.id);
         
+        let data = null;
         if (draftId.startsWith('insp_')) {
           // Extract template ID from insp_TEMPLATEID_TIMESTAMP
           const parts = draftId.split('_');
           if (parts.length >= 2) {
             const templateId = parts[1];
-            query = query.eq('table_name', templateId);
+            data = allDrafts.find(d => d.table_name === templateId);
           } else {
             return; // Invalid ID format
           }
         } else {
           // Assume it's a UUID
-          query = query.eq('id', draftId);
+          data = allDrafts.find(d => d.id === draftId);
         }
 
-        const { data } = await query.maybeSingle();
-          
         if (data) {
           draft = {
             id: data.id,
@@ -189,7 +185,7 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
           };
         }
       } catch (e) {
-        console.error('Error fetching draft from Supabase:', e);
+        console.error('Error fetching draft:', e);
       }
     }
 
@@ -228,7 +224,9 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
             if (sanitizedTable === 'כיבויים_הצי_שנתי' || sanitizedTable === 'הצי_שנתי') {
               sanitizedTable = 'כיבויים_חצי_שנתי';
             }
-            merged[sanitizedTable] = draft.data.pendingChildRecords[table];
+            // Ensure the value is an array before assigning
+            const records = draft.data.pendingChildRecords[table];
+            merged[sanitizedTable] = Array.isArray(records) ? records : [];
           });
 
           Object.keys(prev).forEach(table => {
@@ -237,12 +235,13 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
               sanitizedTable = 'כיבויים_חצי_שנתי';
             }
             
+            const prevRecords = Array.isArray(prev[table]) ? prev[table] : [];
             if (!merged[sanitizedTable]) {
-              merged[sanitizedTable] = prev[table];
+              merged[sanitizedTable] = prevRecords;
             } else {
               // Add local records that aren't in the draft yet
               const draftIds = new Set(merged[sanitizedTable].map((r: any) => r.id));
-              const newLocal = prev[table].filter(r => !draftIds.has(r.id));
+              const newLocal = prevRecords.filter(r => !draftIds.has(r.id));
               merged[sanitizedTable] = [...merged[sanitizedTable], ...newLocal];
             }
           });
@@ -285,12 +284,13 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
       if (inspection.tempChildData) {
         const restored: Record<string, any[]> = {};
         Object.entries(inspection.tempChildData).forEach(([table, config]: [string, any]) => {
-          if (config.records) {
+          if (config && config.records) {
             let sanitizedTable = table;
             if (sanitizedTable === 'כיבויים_הצי_שנתי' || sanitizedTable === 'הצי_שנתי') {
               sanitizedTable = 'כיבויים_חצי_שנתי';
             }
-            restored[sanitizedTable] = config.records;
+            // Ensure records is an array
+            restored[sanitizedTable] = Array.isArray(config.records) ? config.records : [];
           }
         });
         setPendingChildRecords(restored);
@@ -362,7 +362,7 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
         ...data,
         parent_id: parentRowId, // Rule C: Link to parent using parent_id
         ROWID: data.ROWID || `local_${Date.now()}`, // Ensure child has its own ID for potential grandchildren
-        id: `temp_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+        id: crypto.randomUUID(),
         created_at: new Date().toISOString(),
         _is_pending: true,
         _target_table: targetTable
@@ -370,23 +370,25 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
 
       const updatedPending = {
         ...pendingChildRecords,
-        [targetTable]: [...(pendingChildRecords[targetTable] || []), newChildRecord]
+        [targetTable]: [...(Array.isArray(pendingChildRecords[targetTable]) ? pendingChildRecords[targetTable] : []), newChildRecord]
       };
       
       setPendingChildRecords(updatedPending);
 
-      // TASK: Update the parent draft in Supabase immediately so child data isn't lost on reload
+      // TASK: Update the parent draft in localDb immediately so child data isn't lost on reload
       const returnDraftId = localStorage.getItem('returnToDraftId');
       if (returnDraftId) {
         try {
-          const { data: draft } = await supabase.from('inspection_drafts').select('data').eq('id', returnDraftId).single();
+          const drafts = await dbService.getInspectionDrafts(user.id);
+          const draft = drafts.find(d => d.id === returnDraftId);
           if (draft) {
-            await supabase.from('inspection_drafts').update({
+            await dbService.saveInspectionDraft({
+              ...draft,
               data: {
                 ...draft.data,
                 pendingChildRecords: updatedPending
               }
-            }).eq('id', returnDraftId);
+            });
           }
         } catch (e) {
           console.error('[Draft Sync] Failed to update parent draft with child data:', e);
@@ -428,13 +430,8 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
         serial = await dbService.generateInspectionSerialNumber(selectedType, template?.tableName);
       }
 
-      // Sync TEMP ID to real serial
-      if (tempParentId && String(finalData.ROWID).startsWith('TEMP_') && finalData.ROWID === tempParentId && serial) {
-        finalData.ROWID = serial;
-      }
-
       // Bundle Child Data for the Trigger using Recursive Nesting
-      const bundledChildData = nestChildRecords(pendingChildRecords, tempParentId || '');
+      const bundledChildData = nestChildRecords(pendingChildRecords, tempParentId || '', new Set(), {}, serial);
 
       // Execute Atomic Save
       const saveResult = editingInspectionId 
@@ -465,19 +462,13 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
         localStorage.removeItem(`summary_${tempParentId}`);
       }
 
-      // Delete the temporary skeleton record if it exists
-      if (tempParentId && tempParentId.startsWith('TEMP_')) {
-        try {
-          await dbService.supabaseAdmin.from(targetTable).delete().eq('ROWID', tempParentId);
-        } catch (cleanupErr) {}
-      }
-
       await dbService.logActivity(user.name, 'CREATE_INSPECTION', `נוצרה ביקורת אטומית: ${parentFriendlyId}`);
       
       // Trigger Automation Bots
-      dbService.triggerBots(targetTable, parentFriendlyId, 'ADDS');
+      // triggerBots is now handled by SyncEngine after successful sync
+      // dbService.triggerBots(targetTable, parentFriendlyId, 'ADDS');
 
-      if (typeof (window as any).triggerAppsScript === 'function') {
+      if (navigator.onLine && typeof (window as any).triggerAppsScript === 'function') {
         (window as any).triggerAppsScript(parentFriendlyId);
       }
 
@@ -697,7 +688,7 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
                      <button onClick={async () => { 
                        if (draft.isSupabase) {
                          try {
-                           await supabase.from('inspection_drafts').delete().eq('id', draft.id);
+                           await dbService.deleteInspectionDraft(draft.id);
                            loadDrafts();
                          } catch (e) { console.error('Error deleting draft', e); }
                        }
