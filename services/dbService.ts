@@ -13,6 +13,7 @@ class DBService {
 
   private dynamicSchemaCache: Record<string, any[]> | null = null;
   private isFetchingSchema = false;
+  private processedBotIds = new Set<string>();
 
   constructor() {
     // Set up post-sync automation trigger
@@ -488,8 +489,20 @@ class DBService {
       // If skipping queue, it means it's being synced to Supabase directly
       const client = useAdmin ? getSupabaseAdmin() : supabase;
       const actualTableName = this.getActualTableName(tableName);
-      const { error } = await client.from(actualTableName).upsert(payload);
-      if (error) throw error;
+      
+      // Try-Insert-then-Upsert Strategy
+      const { error: insertError } = await client.from(actualTableName).insert(payload);
+      
+      if (insertError) {
+        // Check for duplicate key error (23505)
+        if (insertError.code === '23505' || insertError.message?.includes('duplicate key') || insertError.message?.includes('already exists')) {
+          console.log(`[DB] Record ${payload.id} already exists in ${tableName}, falling back to UPSERT.`);
+          const { error: upsertError } = await client.from(actualTableName).upsert(payload);
+          if (upsertError) throw upsertError;
+        } else {
+          throw insertError;
+        }
+      }
     }
 
     return payload;
@@ -944,6 +957,7 @@ class DBService {
       technician_id: inspection.technicianId,
       inspection_date: inspection.inspectionDate,
       status: inspection.status,
+      is_final_save: true, // Signal final save to listener
       data: {
         ...inspection.data,
         templateName: inspection.templateName, // Store template name in the JSON data
@@ -992,7 +1006,7 @@ class DBService {
       return await this.saveToTable(tableName, payload, true);
     }
 
-    const payload: any = { id };
+    const payload: any = { id, is_final_save: true };
     if (inspection.customerId !== undefined) payload.customer_id = inspection.customerId === "" ? null : inspection.customerId;
     if (inspection.technicianId !== undefined) payload.technician_id = inspection.technicianId === "" ? null : inspection.technicianId;
     if (inspection.inspectionDate !== undefined) payload.inspection_date = inspection.inspectionDate;
@@ -1594,9 +1608,9 @@ class DBService {
       return;
     }
 
-    console.log(`[Automation] Checking for bots on table: ${tableName}, Event: ${eventType}, Record: ${recordId}`);
-    
     try {
+      console.log(`[Automation] Checking for bots on table: ${tableName}, Event: ${eventType}, Record: ${recordId}`);
+
       // 1. Fetch active bots for this table
       const { data: bots, error: botsError } = await getSupabaseAdmin()        .from('automation_bots')
         .select('*')
@@ -1609,18 +1623,7 @@ class DBService {
         return;
       }
 
-      // 2. Filter bots by event type
-      const relevantBots = bots.filter(bot => {
-        const botEvent = bot.action_config?.event || { dataChangeType: bot.event_type };
-        return botEvent.dataChangeType === 'ALL' || botEvent.dataChangeType === eventType;
-      });
-
-      if (relevantBots.length === 0) {
-        console.log(`[Automation] No bots match the event type: ${eventType}`);
-        return;
-      }
-
-      // 3. Fetch the main record data
+      // 2. Fetch the main record data (needed for logical event determination and isFinalSave check)
       let finalRowData = null;
       const { data: rowData, error: fetchError } = await getSupabaseAdmin()        .from(tableName)
         .select('*')
@@ -1643,15 +1646,91 @@ class DBService {
         finalRowData = rowData;
       }
 
+      // 3. Determine Logical Event Type (Fallback for SyncEngine triggers)
+      let logicalEvent = eventType;
+      
+      if (eventType === 'INSERT' as any) {
+        logicalEvent = 'ADDS';
+      } else if (eventType === 'UPDATES' && finalRowData.created_at && finalRowData.updated_at) {
+        const created = new Date(finalRowData.created_at).getTime();
+        const updated = new Date(finalRowData.updated_at).getTime();
+        const diffSeconds = Math.abs(updated - created) / 1000;
+        
+        if (diffSeconds < 10) {
+          console.log(`[Automation] Logical Event re-determined as ADDS (diff: ${diffSeconds}s) for record: ${recordId}`);
+          logicalEvent = 'ADDS';
+        }
+      }
+
+      // 4. Check if this is a "Final Save" (for inspections)
+      const isFinalSave = 
+        finalRowData.status === 'סיום' || 
+        finalRowData.status === 'Completed' || 
+        finalRowData.status === 'SubmittedByTechnician' ||
+        finalRowData.is_final_save === true ||
+        tableName !== 'inspections';
+
+      if (!isFinalSave) {
+        console.log(`[Automation] Skipping bot trigger - not a final save for ${tableName} ${recordId}`);
+        return;
+      }
+
+      // The "Force Add" Fix
+      if ((finalRowData.status === 'סיום' || finalRowData.Status === 'סיום' || tableName === 'חצי_שנתי') && !this.processedBotIds.has(recordId)) {
+        logicalEvent = 'ADDS';
+      }
+
+      if (logicalEvent === 'ADDS') {
+        this.processedBotIds.add(recordId);
+      }
+
+      console.log(`[Automation] FINAL DECISION: Logical Event for ${recordId} is ${logicalEvent}`);
+
+      // 5. Filter bots by logical event type
+      const relevantBots = bots.filter(bot => {
+        const botEvent = bot.action_config?.event || { dataChangeType: bot.event_type };
+        return botEvent.dataChangeType === 'ALL' || botEvent.dataChangeType === logicalEvent;
+      });
+
+      if (relevantBots.length === 0) {
+        console.log(`[Automation] No bots match the logical event type: ${logicalEvent}`);
+        return;
+      }
+
       const GAS_WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbx9Aprjm7RISvTet4j6xip62QlaUPeEnAy5cWDj6JKexwmifRyqDQ0PjuDP0Y3cB9Cg/exec';
 
       // 4. Execute each bot
       for (const bot of relevantBots) {
         console.log(`[Automation] Executing bot: ${bot.name}`);
         
-        const steps = bot.action_config?.steps || [];
+        let rawSteps = bot.action_config?.steps || bot.steps;
+        
+        if (typeof rawSteps === 'string') {
+          try {
+            rawSteps = JSON.parse(rawSteps);
+          } catch (e) {
+            console.error(`[Automation] Failed to parse steps for bot ${bot.name}:`, e);
+            rawSteps = [];
+          }
+        }
 
-        for (const step of steps) {
+        let stepsArray: any[] = [];
+
+        if (rawSteps && typeof rawSteps === 'object' && !Array.isArray(rawSteps)) {
+          // Conversion logic: Sort keys and map to values
+          stepsArray = Object.keys(rawSteps)
+            .sort((a, b) => Number(a) - Number(b))
+            .map(key => rawSteps[key]);
+        } else if (Array.isArray(rawSteps)) {
+          stepsArray = rawSteps;
+        }
+
+        if (stepsArray.length === 0) {
+          console.warn(`[Automation] Bot ${bot.name} has no valid steps to execute.`);
+          continue;
+        }
+
+        for (const step of stepsArray) {
           if (step.type === 'RUN_TASK' && step.task?.type === 'EMAIL') {
             // 1:1 Dynamic Flattening Protocol (Strict)
             const combinedData = this.flattenData(finalRowData);

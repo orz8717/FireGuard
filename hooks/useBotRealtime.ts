@@ -1,5 +1,5 @@
 
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { supabase, getSupabaseAdmin } from '../src/lib/supabase';
 import { dbService } from '../services/dbService';
 
@@ -14,6 +14,8 @@ import { dbService } from '../services/dbService';
 const GAS_WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbx9Aprjm7RISvTet4j6xip62QlaUPeEnAy5cWDj6JKexwmifRyqDQ0PjuDP0Y3cB9Cg/exec';
 
 export const useBotRealtime = () => {
+  const processedIds = useRef(new Set<string>());
+
   useEffect(() => {
     let activeChannels: any[] = [];
 
@@ -63,10 +65,9 @@ export const useBotRealtime = () => {
               { event: '*', schema: 'public', table: tableName },
               async (payload) => {
                 const event = payload.eventType; // 'INSERT', 'UPDATE', 'DELETE'
-                if (event === 'DELETE') return;
-
-                const newRow = payload.new;
-                const rowId = newRow.ROWID || newRow.id;
+                const rowId = (event === 'DELETE') 
+                  ? (payload.old?.ROWID || payload.old?.id) 
+                  : (payload.new?.ROWID || payload.new?.id);
 
                 if (!rowId) {
                   console.warn(`[BotRealtime] Received ${event} on ${tableName} but no ROWID/id found.`);
@@ -75,45 +76,65 @@ export const useBotRealtime = () => {
 
                 console.log(`[BotRealtime] ${event} detected in ${tableName} (ID: ${rowId}). Evaluating bots...`);
 
-                // Fetch full record to ensure we have all columns (including JSONB fields)
-                const { data: fullRecord, error: fetchError } = await getSupabaseAdmin()
-                  .from(tableName)
-                  .select('*')
-                  .eq('ROWID', rowId)
-                  .maybeSingle();
+                let fullRecord = null;
+                if (event !== 'DELETE') {
+                  // Fetch full record to ensure we have all columns (including JSONB fields)
+                  const { data, error: fetchError } = await getSupabaseAdmin()
+                    .from(tableName)
+                    .select('*')
+                    .eq('ROWID', rowId)
+                    .maybeSingle();
 
-                if (fetchError || !fullRecord) {
-                  console.error(`[BotRealtime] Failed to fetch full record for ${rowId} in ${tableName}:`, fetchError);
-                  return;
-                }
-
-                // Execute each relevant bot based on event matching logic
-                for (const bot of bots) {
-                  const botEventType = bot.eventConfig.dataChangeType || bot.event_type;
-                  
-                  // Map Supabase events to Bot Event Types
-                  const payloadEventMap: Record<string, string> = {
-                    'INSERT': 'ADDS',
-                    'UPDATE': 'UPDATES',
-                    'DELETE': 'DELETES'
-                  };
-                  const mappedEvent = payloadEventMap[event] || event;
-
-                  // Flexible Event Matching Logic (as requested)
-                  // Trigger if:
-                  // 1. Bot is set to 'ALL'
-                  // 2. Bot event type matches exactly
-                  // 3. Bot is set to 'ADDS' but we got an 'UPDATE' (Offline sync handling)
-                  const shouldTrigger = (
-                    botEventType === 'ALL' || 
-                    botEventType === mappedEvent || 
-                    (mappedEvent === 'UPDATES' && botEventType === 'ADDS')
-                  );
-
-                  if (shouldTrigger) {
-                    await executeBotAutomation(bot, fullRecord);
+                  if (fetchError || !data) {
+                    console.error(`[BotRealtime] Failed to fetch full record for ${rowId} in ${tableName}:`, fetchError);
+                    return;
                   }
+                  fullRecord = data;
+                } else {
+                  fullRecord = payload.old; // Use old data for DELETE
                 }
+
+                  // Determine logicalEvent once per payload (as requested for precise separation)
+                  let logicalEvent: 'ADDS' | 'UPDATES' | 'DELETES' | null = null;
+
+                  if (event === 'INSERT') {
+                    logicalEvent = 'ADDS';
+                  } else if (event === 'UPDATE') {
+                    // Fetch row data from Supabase (including created_at and updated_at)
+                    const createdAt = fullRecord?.created_at ? new Date(fullRecord.created_at).getTime() : 0;
+                    const updatedAt = fullRecord?.updated_at ? new Date(fullRecord.updated_at).getTime() : 0;
+                    
+                    // Determine the "Logical" Event:
+                    // If created_at and updated_at are the same (or within 10 seconds), define the event as ADDS.
+                    // This handles UPSERTs that are logically new records.
+                    const isNewRecord = Math.abs(updatedAt - createdAt) < 10000; 
+
+                    if (isNewRecord && !processedIds.current.has(rowId)) {
+                      logicalEvent = 'ADDS';
+                    } else {
+                      logicalEvent = 'UPDATES';
+                    }
+                  } else if (event === 'DELETE') {
+                    logicalEvent = 'DELETES';
+                  }
+
+                  if (logicalEvent) {
+                    console.log(`[Automation] Logical Event determined: ${logicalEvent} for record: ${rowId}`);
+                  }
+
+                  // Prevent Duplicates: Use a useRef Set to track ROWIDs that have already triggered an ADDS event
+                  if (logicalEvent === 'ADDS') {
+                    if (processedIds.current.has(rowId)) {
+                      console.log(`[BotRealtime] Skipping duplicate ADDS trigger for ${rowId}`);
+                      return;
+                    }
+                    processedIds.current.add(rowId);
+                  }
+
+                // 4. Trigger Bots via dbService to ensure consistent logic
+                // We pass the logicalEvent (ADDS/UPDATES) to triggerBots so it can correctly match bots
+                console.log(`[BotRealtime] Triggering bots for table ${tableName} with logicalEvent: ${logicalEvent}`);
+                await dbService.triggerBots(tableName, rowId, logicalEvent);
               }
             )
             .subscribe();
@@ -122,135 +143,6 @@ export const useBotRealtime = () => {
         });
       } catch (err) {
         console.error('[BotRealtime] Initialization error:', err);
-      }
-    };
-
-    const executeBotAutomation = async (bot: any, rowData: any) => {
-      try {
-        const actionConfig = bot.action_config || {};
-        let steps = actionConfig.steps;
-        
-        // Defensive Step Handling
-        if (steps === null || steps === undefined) {
-          steps = [];
-        } else if (!Array.isArray(steps)) {
-          // If it's a single object, wrap it in an array
-          steps = [steps];
-        }
-
-        if (steps.length === 0) {
-          console.warn(`[BotRealtime] Bot "${bot.name}" (ID: ${bot.id}) triggered but has no valid steps.`);
-          return;
-        }
-
-        const linkedChildTables = actionConfig.linked_child_tables || [];
-
-        for (const step of steps) {
-          if (!step) continue;
-          
-          if (step.type === 'RUN_TASK' && step.task?.type === 'EMAIL') {
-            console.log(`[BotRealtime] Executing Bot: ${bot.name}, Step: ${step.name || 'Unnamed Step'}`);
-
-            // 1. Fetch Child Data from linked tables
-            const childData: Record<string, any[]> = {};
-            if (linkedChildTables.length > 0) {
-              const parentId = rowData.id || rowData.ROWID || rowData.inspectionSerialNumber;
-              for (const childTable of linkedChildTables) {
-                const { data: children } = await getSupabaseAdmin()
-                  .from(childTable)
-                  .select('*')
-                  .or(`parent_id.eq."${parentId}",ROWID.eq."${parentId}"`);
-                childData[childTable] = children || [];
-              }
-            }
-
-            // 2. Flatten Data (Mirroring TriggersPage.tsx logic)
-            const combinedData: Record<string, string> = {};
-            const formatValue = (val: any) => (val === null || val === undefined) ? "" : String(val);
-            const cleanKey = (k: string) => k.replace(/[\[\]<>]/g, '');
-
-            // Flatten Parent
-            Object.entries(rowData).forEach(([key, value]) => {
-              if (key === 'temp_child_data' || key.startsWith('_')) return;
-              combinedData[cleanKey(key)] = formatValue(value);
-            });
-
-            // Flatten Children (Linked Tables + temp_child_data)
-            const allChildren: any[] = [];
-            Object.values(childData).forEach(records => {
-              if (Array.isArray(records)) allChildren.push(...records);
-            });
-
-            if (rowData.temp_child_data) {
-              const tcd = typeof rowData.temp_child_data === 'string' ? JSON.parse(rowData.temp_child_data) : rowData.temp_child_data;
-              Object.values(tcd).forEach((config: any) => {
-                if (config.records && Array.isArray(config.records)) {
-                  allChildren.push(...config.records);
-                }
-              });
-            }
-
-            allChildren.forEach((child, index) => {
-              const displayIndex = index + 1;
-              Object.entries(child).forEach(([cKey, cValue]) => {
-                if (cKey === 'temp_child_data' || cKey.startsWith('_')) return;
-                combinedData[`${cleanKey(cKey)}_${displayIndex}`] = formatValue(cValue);
-              });
-
-              // Grandchildren
-              if (child.temp_child_data) {
-                const gcd = typeof child.temp_child_data === 'string' ? JSON.parse(child.temp_child_data) : child.temp_child_data;
-                Object.values(gcd).forEach((gConfig: any) => {
-                  if (gConfig.records && Array.isArray(gConfig.records)) {
-                    gConfig.records.forEach((gRecord: any) => {
-                      Object.entries(gRecord).forEach(([gKey, gValue]) => {
-                        if (gKey === 'temp_child_data' || gKey.startsWith('_')) return;
-                        combinedData[`${cleanKey(gKey)}_${displayIndex}`] = formatValue(gValue);
-                      });
-                    });
-                  }
-                });
-              }
-            });
-
-            // 3. Replace Placeholders
-            const replacePlaceholders = (str: string | undefined) => {
-              if (!str) return str;
-              let result = str;
-              Object.entries(combinedData).forEach(([key, value]) => {
-                const regex = new RegExp(`<<${key}>>`, 'g');
-                result = result.replace(regex, value);
-              });
-              return result;
-            };
-
-            const processedTask = {
-              ...step.task,
-              to: replacePlaceholders(step.task.to),
-              subject: replacePlaceholders(step.task.subject),
-              body: replacePlaceholders(step.task.body)
-            };
-
-            // 4. Prepare Payload & Send to GAS
-            const payload = {
-              templateId: step.task.googleDocTemplateId || step.task.templateId || bot.template_id,
-              task: processedTask,
-              combinedData: combinedData,
-              rowData: rowData,
-              childData: childData
-            };
-
-            console.log(`[BotRealtime] Dispatching payload for ${bot.name} to GAS...`);
-            
-            fetch(GAS_WEB_APP_URL, {
-              method: 'POST',
-              headers: { 'Content-Type': 'text/plain' },
-              body: JSON.stringify(payload)
-            }).catch(err => console.error(`[BotRealtime] Error sending to GAS:`, err));
-          }
-        }
-      } catch (err) {
-        console.error(`[BotRealtime] Error executing bot ${bot.name}:`, err);
       }
     };
 

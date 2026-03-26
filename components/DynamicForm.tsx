@@ -899,7 +899,7 @@ const DynamicForm: React.FC<DynamicFormProps> = ({
         
         // Ensure timestamps are formatted for Supabase
         const now = new Date().toISOString();
-        const fieldsToUpdate = ['created_at', 'last_modified_client', 'updated_at'];
+        const fieldsToUpdate = ['created_at', 'last_modified_client'];
         const submissionData = { ...formData };
         fieldsToUpdate.forEach(field => {
           if (!submissionData[field] || submissionData[field] === "") {
@@ -1025,7 +1025,7 @@ const DynamicForm: React.FC<DynamicFormProps> = ({
                       if (rowId) {
                         // Ensure timestamps are formatted for Supabase
                         const now = new Date().toISOString();
-                        const fieldsToUpdate = ['created_at', 'last_modified_client', 'updated_at'];
+                        const fieldsToUpdate = ['created_at', 'last_modified_client'];
                         const processedFormData = { ...formData };
                         fieldsToUpdate.forEach(field => {
                           if (!processedFormData[field] || processedFormData[field] === "") {
@@ -1191,7 +1191,7 @@ const DynamicForm: React.FC<DynamicFormProps> = ({
             try {
                 // Ensure timestamps are formatted for Supabase
                 const now = new Date().toISOString();
-                const fieldsToUpdate = ['created_at', 'last_modified_client', 'updated_at'];
+                const fieldsToUpdate = ['created_at', 'last_modified_client'];
                 const draftData = { ...formData };
                 fieldsToUpdate.forEach(field => {
                   if (!draftData[field] || draftData[field] === "") {
@@ -1304,7 +1304,7 @@ const DynamicForm: React.FC<DynamicFormProps> = ({
 
                   // Ensure timestamps are formatted for Supabase
                   const now = new Date().toISOString();
-                  const fieldsToUpdate = ['created_at', 'last_modified_client', 'updated_at'];
+                  const fieldsToUpdate = ['created_at', 'last_modified_client'];
                   fieldsToUpdate.forEach(field => {
                     if (!dataToSave[field] || dataToSave[field] === "") {
                       dataToSave[field] = now;

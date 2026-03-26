@@ -469,7 +469,8 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
     
     try {
       const tempParentId = localStorage.getItem('pendingParentRowId');
-      let finalData = { ...processedData };
+      // Inject Status: 'סיום' to ensure bots recognize this as a final save
+      let finalData = { ...processedData, Status: 'סיום', status: 'סיום' };
       
       let serial = processedData.inspectionSerialNumber || processedData.serial_number;
       if (!serial) {

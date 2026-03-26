@@ -262,6 +262,35 @@ export class SyncEngine {
     return newData;
   }
 
+  private sanitizePathPart(part: string): string {
+    const mapping: Record<string, string> = {
+      'חצי_שנתי': 'half_yearly_inspections',
+      'ביקורת_שנתית': 'annual_inspection',
+      'טופס_4': 'form_4',
+      'טופס_5': 'form_5',
+      'טופס_6': 'form_6',
+      'כיבויים_חצי_שנתי': 'extinguishers_half_yearly',
+      'כיבויים_שנתי': 'extinguishers_annual',
+      'כיבויים_שנתי_2': 'extinguishers_annual_2',
+      'חתימת_טכנאי': 'technician_signature',
+      'חתימת_לקוח': 'customer_signature'
+    };
+
+    let sanitized = part;
+    for (const [heb, eng] of Object.entries(mapping)) {
+      sanitized = sanitized.replace(new RegExp(heb, 'g'), eng);
+    }
+
+    // Remove non-ASCII characters and replace spaces/special chars with underscores
+    sanitized = sanitized
+      .replace(/[^\x00-\x7F]/g, '') // Remove non-ASCII
+      .replace(/[^a-zA-Z0-9_-]/g, '_') // Replace non-alphanumeric (except _ and -) with _
+      .replace(/_+/g, '_') // Collapse multiple underscores
+      .replace(/^_|_$/g, ''); // Trim underscores from ends
+
+    return sanitized || 'file';
+  }
+
   private async uploadBase64(base64: string, table: string, field: string, recordId: string): Promise<string> {
     const [header, content] = base64.split(',');
     const mimeMatch = header.match(/:(.*?);/);
@@ -277,7 +306,9 @@ export class SyncEngine {
     const byteArray = new Uint8Array(byteNumbers);
     const blob = new Blob([byteArray], { type: mimeType });
 
-    const fileName = `${table}/${recordId}/${field}_${Date.now()}.${extension}`;
+    const sanitizedTable = this.sanitizePathPart(table);
+    const sanitizedField = this.sanitizePathPart(field);
+    const fileName = `${sanitizedTable}/${recordId}/${sanitizedField}_${Date.now()}.${extension}`;
     
     const { data, error } = await supabase.storage
       .from('media')
