@@ -1,129 +1,104 @@
-import { supabase, supabaseAdmin } from './supabaseClient';
+import { supabase } from '../src/lib/supabase';
 
-export interface SchemaDefinition {
-  [tableName: string]: string[];
+export interface TableMetadata {
+  table_name: string;
+  column_name: string;
+  data_type: string;
 }
 
 export class SchemaService {
-  private schema: SchemaDefinition | null = null;
-  private initializationPromise: Promise<SchemaDefinition> | null = null;
-  
-  // Core mapping for common Hebrew UI keys to English DB columns
-  private CORE_MAPPING: Record<string, string> = {
-    'שם_לקוח': 'customer_name',
-    'מזהה_טכנאי': 'technician_id',
-    'תאריך_בדיקה': 'inspection_date',
-    'מספר_סידורי': 'serial_number',
-    'סוג_בדיקה': 'inspection_type',
-    'סטטוס': 'status',
-    'מזהה_לקוח': 'customer_id',
-    'הערות': 'notes',
-    'חתימה': 'signature_url',
-    'תמונה': 'image_url',
-    'מזהה_הורה': 'parent_id',
-    'ROWID': 'serial_number' // In this app, ROWID often maps to the serial
-  };
+  private static readonly FALLBACK_TABLES = [
+    'customers',
+    'form_templates',
+    'form_fields',
+    'inspections',
+    'NOYES',
+    'Signture',
+    'Panel',
+    'טופס_4',
+    'טופס_5',
+    'טופס_6',
+    'ביקורת_שנתית',
+    'חצי_שנתי',
+    'כיבויים_חצי_שנתי',
+    'כיבויים_שנתי',
+    'כיבויים_שנתי_2',
+    'users',
+    'permissions',
+    'automation_bots',
+    'audit_logs',
+    'import_logs'
+  ];
 
-  // Internal System Keys that should NEVER be stripped or moved to JSONB
-  private SYSTEM_KEYS = ['id', 'parent_id', 'temp_child_data', 'created_at', 'updated_at', 'last_modified_client'];
+  private static readonly CORE_COLUMNS = [
+    { column_name: 'id', data_type: 'uuid' },
+    { column_name: 'created_at', data_type: 'timestamp with time zone' },
+    { column_name: 'updated_at', data_type: 'timestamp with time zone' },
+    { column_name: 'last_modified_client', data_type: 'timestamp with time zone' },
+    { column_name: 'parent_id', data_type: 'uuid' }
+  ];
 
-  async getSchema(): Promise<SchemaDefinition> {
-    if (this.schema && Object.keys(this.schema).length > 0) return this.schema;
-    if (this.initializationPromise) return this.initializationPromise;
-
-    this.initializationPromise = (async () => {
-      try {
-        console.log('[SchemaService] Hydrating schema from Supabase...');
-        const { data, error } = await supabase.rpc('get_schema_definition');
-        
-        if (error || !data || Object.keys(data).length === 0) {
-          console.warn('[SchemaService] RPC get_schema_definition failed or returned empty. Using fallback...', error);
-          
-          // Fallback: Manually fetch from information_schema
-          const { data: cols, error: colError } = await supabaseAdmin
-            .from('information_schema.columns')
-            .select('table_name, column_name')
-            .eq('table_schema', 'public');
-
-          if (colError) {
-            console.error('[SchemaService] Fallback also failed:', colError);
-            this.schema = this.schema || {};
-            return this.schema;
-          }
-
-          const fallbackSchema: SchemaDefinition = {};
-          cols.forEach((c: any) => {
-            if (!fallbackSchema[c.table_name]) fallbackSchema[c.table_name] = [];
-            fallbackSchema[c.table_name].push(c.column_name);
-          });
-
-          this.schema = fallbackSchema;
-        } else {
-          this.schema = data as SchemaDefinition;
-        }
-
-        console.log('[SchemaService] Schema hydrated successfully. Tables found:', Object.keys(this.schema).length);
-        return this.schema;
-      } catch (err) {
-        console.error('[SchemaService] Error in getSchema:', err);
-        this.schema = this.schema || {};
-        return this.schema;
-      } finally {
-        this.initializationPromise = null;
+  /**
+   * Fetches schema metadata using the get_schema_metadata RPC.
+   * Falls back to a hardcoded whitelist if the RPC fails.
+   */
+  static async getSchemaMetadata(): Promise<Record<string, Set<string>>> {
+    const data = await this.getRawMetadata();
+    const schema: Record<string, Set<string>> = {};
+    data.forEach(row => {
+      if (!schema[row.table_name]) {
+        schema[row.table_name] = new Set();
       }
-    })();
-
-    return this.initializationPromise;
+      schema[row.table_name].add(row.column_name);
+    });
+    return schema;
   }
 
   /**
-   * Sanitizes a payload before sending to Supabase.
-   * 1. Translates Hebrew keys using CORE_MAPPING.
-   * 2. Strips local-only keys (starting with _).
-   * 3. Moves unknown keys (not in schema) to the 'data' JSONB column.
-   * 4. Preserves SYSTEM_KEYS (like temp_child_data).
+   * Fetches raw schema metadata including data types.
    */
-  async sanitizePayload(tableName: string, payload: any): Promise<any> {
-    const schema = await this.getSchema();
-    const validColumns = schema[tableName] || [];
-    
-    // If table doesn't exist in schema, we can't sanitize accurately, 
-    // but we'll try to preserve standard fields.
-    const sanitized: any = {};
-    const dynamicData: any = payload.data ? (typeof payload.data === 'string' ? JSON.parse(payload.data) : { ...payload.data }) : {};
+  static async getRawMetadata(): Promise<TableMetadata[]> {
+    try {
+      console.log('[SchemaService] Fetching schema metadata via RPC...');
+      const { data, error } = await supabase.rpc('get_schema_metadata');
 
-    for (const key in payload) {
-      // 1. Strip local-only keys
-      if (key.startsWith('_')) continue;
-
-      // 2. Preserve System Keys (CRITICAL: temp_child_data is protected here)
-      if (this.SYSTEM_KEYS.includes(key)) {
-        sanitized[key] = payload[key];
-        continue;
+      if (error) {
+        console.warn('[SchemaService] RPC failed, falling back to whitelist:', error.message);
+        return this.getFallbackRawSchema();
       }
 
-      // 3. Translate using CORE_MAPPING
-      let targetKey = this.CORE_MAPPING[key] || key;
-
-      // 4. Check if key (original or translated) exists in Supabase schema
-      if (validColumns.includes(targetKey)) {
-        sanitized[targetKey] = payload[key];
-      } else if (validColumns.includes(key)) {
-        sanitized[key] = payload[key];
-      } else {
-        // 5. Move to JSONB 'data' blob if not a system key and not in schema
-        // This handles all Hebrew dynamic form fields
-        dynamicData[key] = payload[key];
+      if (!data || !Array.isArray(data)) {
+        console.warn('[SchemaService] RPC returned no data, falling back to whitelist');
+        return this.getFallbackRawSchema();
       }
-    }
 
-    // Only add 'data' column if the table actually has one in Supabase
-    if (validColumns.includes('data')) {
-      sanitized.data = typeof payload.data === 'string' ? JSON.stringify(dynamicData) : dynamicData;
+      return data as TableMetadata[];
+    } catch (err) {
+      console.error('[SchemaService] Unexpected error fetching schema:', err);
+      return this.getFallbackRawSchema();
     }
+  }
 
-    return sanitized;
+  private static getFallbackRawSchema(): TableMetadata[] {
+    const raw: TableMetadata[] = [];
+    this.FALLBACK_TABLES.forEach(table => {
+      this.CORE_COLUMNS.forEach(col => {
+        raw.push({
+          table_name: table,
+          column_name: col.column_name,
+          data_type: col.data_type
+        });
+      });
+    });
+    return raw;
+  }
+
+  /**
+   * Returns the actual table name, handling common misspellings or legacy names.
+   * Strictly uses 'Signture' as per database.
+   */
+  static getActualTableName(tableName: string): string {
+    if (tableName === 'Signature') return 'Signture';
+    return tableName;
   }
 }
-
-export const schemaService = new SchemaService();

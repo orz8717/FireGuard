@@ -1,9 +1,10 @@
-
 import React from 'react';
 import { Inspection, InspectionType, InspectionStatus, Customer, User, UserRole, FormTemplate, FieldType } from '../types';
+import { waitUntilReady } from '../src/lib/connectionGuard';
 import { dbService } from '../services/dbService';
 import { nestChildRecords } from '../utils/dataUtils';
-import { supabase } from '../services/supabaseClient';
+import { generateUUID, generateROWID } from '../src/utils/idGenerators';
+import { supabase } from '../src/lib/supabase';
 import { Plus, Search, Eye, Edit2, Loader2, ClipboardList, Clock, Trash2, Zap, Building, CreditCard, Fingerprint, Calendar } from 'lucide-react';
 import DynamicForm from '../components/DynamicForm';
 import { useSync } from '../src/context/SyncContext';
@@ -37,6 +38,11 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
   const loadData = async (parentTable?: string, childTable?: string) => {
     setLoading(true);
     try {
+      const ready = await waitUntilReady();
+      if (!ready) {
+          console.warn('[Inspections] Connection not ready, loading from local cache.');
+      }
+
       const [allI, allC, allU, allT] = await Promise.all([
         dbService.getInspections(),
         dbService.getCustomers(),
@@ -44,13 +50,11 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
         dbService.getFormTemplates()
       ]);
       const filtered = user.role === UserRole.USER ? allI.filter(i => i.technicianId === user.id) : allI;
-      // Include all inspections and active templates to ensure navigation works for all configured forms
       setInspections(filtered);
       setCustomers(allC);
       setUsers(allU);
       setAvailableTemplates(allT.filter(t => t.isActive));
       
-      // Targeted Sync: Only fetch data for specific tables if provided
       await fetchDynamicSchema(parentTable, childTable);
       
       loadDrafts();
@@ -72,7 +76,7 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
       if (data) {
         allDrafts = data
           .map(d => ({
-            id: d.id || d.ROWID, // Supabase UUID or local ROWID
+            id: d.id || d.ROWID,
             templateId: d.table_name,
             templateName: d.data?.templateName || 'טיוטה',
             customerName: d.data?.customerName || 'לקוח לא ידוע',
@@ -84,7 +88,6 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
           .filter(d => !d.templateName.startsWith('עדכון טבלת'));
       }
 
-      // Only use local drafts to prevent duplicates
       allDrafts = allDrafts.sort((a: any, b: any) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
       setDrafts(allDrafts);
     } catch (err) {
@@ -115,26 +118,56 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
         return;
       }
 
-      // TASK: Implement Temporary ID for new Parent Forms
+      if (!isAdding) {
+        localStorage.removeItem('returnToDraftId');
+      }
       const isChildNavigation = !!localStorage.getItem('returnToDraftId');
       const newInitialValues: Record<string, any> = { technicianId: user.id };
 
+      t.fields.forEach(field => {
+        const formula = (field.calculationFormula || field.defaultValue || '').toUpperCase();
+        if (formula.includes('UNIQUEID()')) {
+          newInitialValues[field.fieldKey] = Math.random().toString(36).substring(2, 11).toUpperCase();
+        } else if (formula.includes('UNIQUEID_V4()')) {
+          newInitialValues[field.fieldKey] = crypto.randomUUID().toUpperCase();
+        }
+      });
+
+      if (!newInitialValues['id']) {
+        newInitialValues['id'] = generateUUID();
+      }
+      
+      if (!newInitialValues['ROWID']) {
+        newInitialValues['ROWID'] = generateROWID();
+      }
+
       if (!isChildNavigation) {
-        // Fresh Parent Form session
         localStorage.removeItem('pendingParentRowId');
         localStorage.removeItem('parentFormData');
         
-        const tempId = crypto.randomUUID();
-        localStorage.setItem('pendingParentRowId', tempId);
+        localStorage.setItem('pendingParentRowId', newInitialValues['id']);
         
-        // Inject temp ID into ROWID field
-        newInitialValues['ROWID'] = tempId;
-        
-        // Clear pending children for new session
         setPendingChildRecords({});
+
+        const url = new URL(window.location.href);
+        if (url.searchParams.has('parentRowId')) {
+          url.searchParams.delete('parentRowId');
+          window.history.pushState({}, '', url.toString());
+        } else if (url.hash.includes('parentRowId=')) {
+          const [hashPath, hashQuery] = url.hash.split('?');
+          if (hashQuery) {
+            const hashParams = new URLSearchParams(hashQuery);
+            hashParams.delete('parentRowId');
+            const newHash = hashParams.toString() ? `${hashPath}?${hashParams.toString()}` : hashPath;
+            url.hash = newHash;
+            window.history.pushState({}, '', url.toString());
+          }
+        }
       }
 
       setSelectedType(type);
+      setTemplate(null);
+      setInitialValues({});
       setTemplate(t);
       setInitialValues(newInitialValues); 
       setActiveDraftId(`insp_${t.id}_${Date.now()}`);
@@ -149,26 +182,22 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
   const handleContinueDraft = async (draftId: string) => {
     let draft: any = null;
     
-    // Check Supabase drafts in state
     draft = drafts.find(d => d.id === draftId);
     
-    // If not found in state, fetch from localDb directly
     if (!draft) {
       try {
         const allDrafts = await dbService.getInspectionDrafts(user.id);
         
         let data = null;
         if (draftId.startsWith('insp_')) {
-          // Extract template ID from insp_TEMPLATEID_TIMESTAMP
           const parts = draftId.split('_');
           if (parts.length >= 2) {
             const templateId = parts[1];
             data = allDrafts.find(d => d.table_name === templateId);
           } else {
-            return; // Invalid ID format
+            return;
           }
         } else {
-          // Assume it's a UUID
           data = allDrafts.find(d => d.id === draftId);
         }
 
@@ -201,9 +230,7 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
         return;
       }
 
-      // Restore pending parent ID if it exists in the draft data
-      // For child forms, the parent ID is in ROWID. For parent forms, it's in ROWID.
-      const draftParentId = draft.data?.ROWID;
+      const draftParentId = draft.data?.id || draft.data?.ROWID;
       if (draftParentId) {
         localStorage.setItem('pendingParentRowId', draftParentId);
       }
@@ -215,18 +242,14 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
       setInitialValues(draft.data);
       if (draft.data?.pendingChildRecords) {
         setPendingChildRecords(prev => {
-          // Merge local state with draft data to prevent losing records during transitions
           const merged: Record<string, any[]> = {};
           
-          // Sanitize draft data keys
           Object.keys(draft.data.pendingChildRecords).forEach(table => {
             let sanitizedTable = table;
             if (sanitizedTable === 'כיבויים_הצי_שנתי' || sanitizedTable === 'הצי_שנתי') {
               sanitizedTable = 'כיבויים_חצי_שנתי';
             }
-            // Ensure the value is an array before assigning
-            const records = draft.data.pendingChildRecords[table];
-            merged[sanitizedTable] = Array.isArray(records) ? records : [];
+            merged[sanitizedTable] = draft.data.pendingChildRecords[table];
           });
 
           Object.keys(prev).forEach(table => {
@@ -235,21 +258,16 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
               sanitizedTable = 'כיבויים_חצי_שנתי';
             }
             
-            const prevRecords = Array.isArray(prev[table]) ? prev[table] : [];
             if (!merged[sanitizedTable]) {
-              merged[sanitizedTable] = prevRecords;
+              merged[sanitizedTable] = prev[table];
             } else {
-              // Add local records that aren't in the draft yet
               const draftIds = new Set(merged[sanitizedTable].map((r: any) => r.id));
-              const newLocal = prevRecords.filter(r => !draftIds.has(r.id));
+              const newLocal = prev[table].filter(r => !draftIds.has(r.id));
               merged[sanitizedTable] = [...merged[sanitizedTable], ...newLocal];
             }
           });
           return merged;
         });
-      } else {
-        // If no draft records, keep what we have in state (which might be newer)
-        // or clear if we are starting fresh (though handleContinueDraft implies we aren't)
       }
       setEditingInspectionId(draft.editingInspectionId || null);
       setActiveDraftId(draft.id);
@@ -276,21 +294,18 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
         return;
       }
 
-      // TASK: Set pending parent ID for existing record
-      const parentRowId = inspection.data?.ROWID || inspection.inspectionSerialNumber || inspection.id;
+      const parentRowId = inspection.id || inspection.data?.id || inspection.data?.ROWID || inspection.inspectionSerialNumber;
       localStorage.setItem('pendingParentRowId', parentRowId);
 
-      // Load existing child data into pending state for atomic update
       if (inspection.tempChildData) {
         const restored: Record<string, any[]> = {};
         Object.entries(inspection.tempChildData).forEach(([table, config]: [string, any]) => {
-          if (config && config.records) {
+          if (config.records) {
             let sanitizedTable = table;
             if (sanitizedTable === 'כיבויים_הצי_שנתי' || sanitizedTable === 'הצי_שנתי') {
               sanitizedTable = 'כיבויים_חצי_שנתי';
             }
-            // Ensure records is an array
-            restored[sanitizedTable] = Array.isArray(config.records) ? config.records : [];
+            restored[sanitizedTable] = config.records;
           }
         });
         setPendingChildRecords(restored);
@@ -333,8 +348,17 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
   };
 
   const handleCreate = async (data: Record<string, any>) => {
+    // Ensure timestamps are formatted for Supabase
+    const now = new Date().toISOString();
+    const fieldsToUpdate = ['created_at', 'last_modified_client', 'updated_at'];
+    const processedData = { ...data };
+    fieldsToUpdate.forEach(field => {
+      if (!processedData[field] || processedData[field] === "") {
+        processedData[field] = now;
+      }
+    });
+
     let targetTable = template?.tableName || 'inspections';
-    // FIX TYPO: Ensure the correct table name is used for the JSON key and database table
     if (targetTable === 'כיבויים_הצי_שנתי' || targetTable === 'הצי_שנתי') {
       targetTable = 'כיבויים_חצי_שנתי';
     }
@@ -342,27 +366,28 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
     const isChildForm = !!localStorage.getItem('returnToDraftId');
     
     if (isChildForm) {
-      // TASK 1.1: Save Child to local temporary state instead of DB
       console.log(`[Local Save] Saving child record for table: ${targetTable}`);
       let parentRowId = localStorage.getItem('pendingParentRowId');
       
-      // Fallback: Try to get from the data itself (ROWID)
-      if (!parentRowId && data.ROWID) {
-        parentRowId = data.ROWID;
+      if (!parentRowId && (processedData.id || processedData.ROWID)) {
+        parentRowId = processedData.id || processedData.ROWID;
         localStorage.setItem('pendingParentRowId', parentRowId);
       }
 
-      // Validation: Allow saving if a Temporary ID exists
       if (!parentRowId) {
         alert("שגיאה: לא נמצא מזהה רשומה עליונה. אנא וודא שהרשומה העליונה נפתחה כראוי.");
         return;
       }
 
+      const resolvedCustomerId = processedData.customer_id || processedData.customerId || localStorage.getItem('lastActiveCustomerId');
+      
       const newChildRecord = {
-        ...data,
-        parent_id: parentRowId, // Rule C: Link to parent using parent_id
-        ROWID: data.ROWID || `local_${Date.now()}`, // Ensure child has its own ID for potential grandchildren
-        id: crypto.randomUUID(),
+        ...processedData,
+        parent_id: parentRowId,
+        customer_id: resolvedCustomerId,
+        customerId: resolvedCustomerId,
+        ROWID: processedData.ROWID || generateROWID(),
+        id: processedData.id || generateUUID(),
         created_at: new Date().toISOString(),
         _is_pending: true,
         _target_table: targetTable
@@ -370,73 +395,92 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
 
       const updatedPending = {
         ...pendingChildRecords,
-        [targetTable]: [...(Array.isArray(pendingChildRecords[targetTable]) ? pendingChildRecords[targetTable] : []), newChildRecord]
+        [targetTable]: [...(pendingChildRecords[targetTable] || []), newChildRecord]
       };
       
       setPendingChildRecords(updatedPending);
 
-      // TASK: Update the parent draft in localDb immediately so child data isn't lost on reload
       const returnDraftId = localStorage.getItem('returnToDraftId');
       if (returnDraftId) {
         try {
+          const urlParams = new URLSearchParams(window.location.search);
+          const parentRowIdFromUrl = urlParams.get('parentRowId');
+          
           const drafts = await dbService.getInspectionDrafts(user.id);
-          const draft = drafts.find(d => d.id === returnDraftId);
+          const draft = drafts.find(d => d.id === returnDraftId || d.data?.id === parentRowIdFromUrl);
+          
           if (draft) {
+            const finalCustomerId = resolvedCustomerId || draft.data.customer_id || draft.data.customerId;
+            if (!finalCustomerId) {
+                console.warn("[Child Save] customer_id is missing! Context restoration failed.");
+                alert("שגיאה: מזהה לקוח חסר. לא ניתן לשמור את הרשומה.");
+                return;
+            }
+
+            let tempChildData = [];
+            try {
+              const existingData = draft.data?.TEMP_CHILD_DATA;
+              if (typeof existingData === 'string') {
+                tempChildData = JSON.parse(existingData);
+              } else if (Array.isArray(existingData)) {
+                tempChildData = existingData;
+              }
+            } catch (e) {
+              console.warn('[Draft Sync] Failed to parse existing TEMP_CHILD_DATA, starting fresh');
+            }
+
+            const updatedTempChildData = [...tempChildData, {
+              ...newChildRecord,
+              customer_id: finalCustomerId,
+              customerId: finalCustomerId,
+              templateName: template?.name || 'נתוני טופס',
+              inspectionSerialNumber: 'טיוטה מקומית',
+              inspectionDate: new Date().toLocaleDateString('he-IL')
+            }];
+
             await dbService.saveInspectionDraft({
               ...draft,
               data: {
                 ...draft.data,
-                pendingChildRecords: updatedPending
+                customer_id: finalCustomerId,
+                customerId: finalCustomerId,
+                pendingChildRecords: updatedPending,
+                // ✅ שמור גם uppercase וגם lowercase כדי לכסות את שני המקרים
+                TEMP_CHILD_DATA: updatedTempChildData,
+                temp_child_data: JSON.stringify(updatedTempChildData)
               }
             });
+
+            if (parentRowId) {
+              localStorage.setItem(`summary_${parentRowId}`, JSON.stringify(updatedTempChildData));
+            }
           }
         } catch (e) {
           console.error('[Draft Sync] Failed to update parent draft with child data:', e);
         }
       }
 
-      // Update local summary for UI display in DynamicForm
-      const summaryKey = `summary_${parentRowId}`;
-      const existing = JSON.parse(localStorage.getItem(summaryKey) || '[]');
-      localStorage.setItem(summaryKey, JSON.stringify([...existing, {
-        ...newChildRecord,
-        templateName: template?.name || 'נתוני טופס',
-        inspectionSerialNumber: 'טיוטה מקומית',
-        inspectionDate: new Date().toLocaleDateString('he-IL')
-      }]));
-
-      // Return to parent form
-      localStorage.removeItem('returnToDraftId');
-      if (returnDraftId) {
-        await handleContinueDraft(returnDraftId);
-      } else {
-        setIsAdding(false);
-      }
       return;
     }
 
-    // TASK 1.2: Final Save on Parent Form (Atomic Single-Trip)
     console.log(`Initiating Atomic Final Save... Target Table: ${targetTable}`);
     setSavingStatus(`שומר נתונים באופן אטומי...`);
     setLoading(true);
     
     try {
       const tempParentId = localStorage.getItem('pendingParentRowId');
-      let finalData = { ...data };
+      let finalData = { ...processedData };
       
-      // Generate or retrieve serial number
-      let serial = data.inspectionSerialNumber || data.serial_number;
+      let serial = processedData.inspectionSerialNumber || processedData.serial_number;
       if (!serial) {
         serial = await dbService.generateInspectionSerialNumber(selectedType, template?.tableName);
       }
 
-      // Bundle Child Data for the Trigger using Recursive Nesting
-      const bundledChildData = nestChildRecords(pendingChildRecords, tempParentId || '', new Set(), {}, serial);
+      const bundledChildData = nestChildRecords(pendingChildRecords, tempParentId || '');
 
-      // Execute Atomic Save
       const saveResult = editingInspectionId 
         ? await dbService.updateInspection(editingInspectionId, {
-            customerId: data.customerId || '',
+            customerId: processedData.customerId || '',
             technicianId: user.id,
             inspectionDate: new Date().toISOString().split('T')[0],
             data: finalData
@@ -445,7 +489,7 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
             inspectionSerialNumber: serial,
             inspectionType: selectedType,
             templateName: template?.name,
-            customerId: data.customerId || '',
+            customerId: processedData.customerId || '',
             technicianId: user.id,
             inspectionDate: new Date().toISOString().split('T')[0],
             status: InspectionStatus.SUBMITTED,
@@ -455,7 +499,6 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
       const parentData = Array.isArray(saveResult) ? saveResult[0] : saveResult;
       const parentFriendlyId = parentData.ROWID || parentData.serial_number || parentData.inspectionSerialNumber || parentData.id;
 
-      // Cleanup session data
       localStorage.removeItem('pendingParentRowId');
       localStorage.removeItem('parentFormData');
       if (tempParentId) {
@@ -463,19 +506,31 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
       }
 
       await dbService.logActivity(user.name, 'CREATE_INSPECTION', `נוצרה ביקורת אטומית: ${parentFriendlyId}`);
-      
-      // Trigger Automation Bots
-      // triggerBots is now handled by SyncEngine after successful sync
-      // dbService.triggerBots(targetTable, parentFriendlyId, 'ADDS');
 
       if (navigator.onLine && typeof (window as any).triggerAppsScript === 'function') {
         (window as any).triggerAppsScript(parentFriendlyId);
+      }
+
+      if (activeDraftId) {
+        try {
+          const drafts = await dbService.getInspectionDrafts(user.id);
+          const draftToDelete = drafts.find(d => 
+            d.id === activeDraftId || d.table_name === template?.id
+          );
+          if (draftToDelete) {
+            await dbService.deleteInspectionDraft(draftToDelete.id);
+          }
+        } catch (cleanupErr) {
+          console.error('Error deleting draft after save:', cleanupErr);
+        }
       }
 
       alert(`הנתונים נשמרו בהצלחה (שמירה אטומית)!`);
       setSavingStatus(null);
       setIsAdding(false);
       setEditingInspectionId(null);
+      setInitialValues({});
+      setTemplate(null); 
       setPendingChildRecords({});
       
       const url = new URL(window.location.href);
@@ -492,7 +547,6 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
     }
   };
 
-  // Production Fix: Normalize contextData keys to ensure formulas using different casing (e.g. customer_number vs customerNumber) work correctly.
   const contextData = React.useMemo(() => ({
     ...dynamicTableData,
     Customers: customers.map(c => {
@@ -502,7 +556,7 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
         ...nObj, 
         id: c.id, 
         customerNumber: c.customerNumber, 
-        customer_number: c.customerNumber, // Alias for Excel-imported formulas
+        customer_number: c.customerNumber,
         name: c.name, 
         address: c.address,
         city: c.city,
@@ -518,7 +572,6 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
     }))
   }), [customers, users, dynamicTableData]);
 
-  // Memoize the combined template to prevent referential changes triggering unnecessary re-renders in DynamicForm
   const fullTemplate = React.useMemo(() => {
     if (!template) return null;
     const isFireSafety = template.name.includes('כיבויים');
@@ -544,6 +597,46 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
     };
   }, [template, customers]);
 
+  // ============================================================
+  // handleReturnToParent — חזרה לטופס האב לאחר onAction של REDIRECT_FORM
+  // מטופל כאן ב-Inspections.tsx ולא ב-DynamicForm
+  // ============================================================
+  const handleReturnToParent = React.useCallback(async (templateId: string, rowId: string) => {
+  console.log("Navigating BACK to parent. Template:", templateId, "Row:", rowId);
+
+  const url = new URL(window.location.href);
+  url.searchParams.delete('parentRowId');
+  url.searchParams.delete('parentTemplateId');
+  window.history.replaceState({}, '', url.toString());
+
+  localStorage.removeItem('returnToDraftId');
+  localStorage.removeItem('parentFormData');
+  localStorage.removeItem('pendingParentRowId');
+  localStorage.removeItem('pendingParentTemplateId');
+
+  try {
+    const allDrafts = await dbService.getInspectionDrafts(user.id);
+    
+    const parentDraft = allDrafts.find(d => 
+      d.data?.id === rowId || 
+      d.data?.ROWID === rowId || 
+      d.table_name === templateId
+    );
+
+    if (parentDraft) {
+      console.log("Found parent draft with TEMP_CHILD_DATA:", parentDraft.data?.TEMP_CHILD_DATA);
+      await handleContinueDraft(parentDraft.id);
+      return;
+    }
+  } catch (e) {
+    console.error("Error finding parent draft:", e);
+  }
+
+  // אם לא נמצאה טיוטה — פתח את התבנית עם ה-rowId כ-initialValues
+  console.log("No parent draft found, loading template directly:", templateId);
+  await handleStartNew(InspectionType.OTHER, templateId);
+}, [user.id]);
+
   if (isAdding && fullTemplate && activeDraftId) {
     return (
       <div className="bg-white p-6 rounded-3xl border shadow-sm max-w-4xl mx-auto animate-in zoom-in duration-300">
@@ -563,37 +656,101 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
           onSubmit={handleCreate} 
           onCancel={() => { 
             const isFireSafety = template?.name?.includes('כיבויים');
+            const returnDraftId = localStorage.getItem('returnToDraftId');
+            localStorage.removeItem('returnToDraftId');
+            localStorage.removeItem('parentFormData');
+            localStorage.removeItem('pendingParentRowId');
+            
             if (isFireSafety) {
               window.history.back();
-              const returnDraftId = localStorage.getItem('returnToDraftId');
               if (returnDraftId) {
                 handleContinueDraft(returnDraftId);
-                localStorage.removeItem('returnToDraftId');
               } else {
                 setIsAdding(false);
               }
             } else {
-              setIsAdding(false); 
-              const url = new URL(window.location.href);
-              url.searchParams.delete('parentRowId');
-              window.history.pushState({}, '', url.toString());
-              loadDrafts(); 
+              if (returnDraftId) {
+                handleContinueDraft(returnDraftId);
+              } else {
+                setIsAdding(false); 
+                const url = new URL(window.location.href);
+                if (url.searchParams.has('parentRowId')) {
+                  url.searchParams.delete('parentRowId');
+                  window.history.pushState({}, '', url.toString());
+                } else if (url.hash.includes('parentRowId=')) {
+                  const [hashPath, hashQuery] = url.hash.split('?');
+                  if (hashQuery) {
+                    const hashParams = new URLSearchParams(hashQuery);
+                    hashParams.delete('parentRowId');
+                    const newHash = hashParams.toString() ? `${hashPath}?${hashParams.toString()}` : hashPath;
+                    url.hash = newHash;
+                    window.history.pushState({}, '', url.toString());
+                  }
+                }
+                loadDrafts(); 
+              }
             }
           }} 
           onSwitchDraft={handleContinueDraft} 
           onAction={async (type, payload) => {
-            if (type === 'REDIRECT_FORM') {
-              localStorage.setItem('returnToDraftId', activeDraftId);
-              const { field, currentData, targetFormId } = payload as any;
+            const EXIT_ACTION_TYPES = ['CANCEL', 'SAVE_REVIEW'];
+
+            if (EXIT_ACTION_TYPES.includes(type)) {
+              const parentRowId = payload?.parentRowId || localStorage.getItem('pendingParentRowId');
+              const parentTemplateId = payload?.parentTemplateId || localStorage.getItem('pendingParentTemplateId');
+
+              if (parentRowId && parentTemplateId) {
+                console.log(`!!! FORCE REDIRECT DETECTED !!! Action: ${type}. Returning to parent: ${parentRowId}`);
+                await handleReturnToParent(parentTemplateId, parentRowId);
+                return;
+              }
+
+              // Fallback if no parent info found - use same logic as onCancel
+              const isFireSafety = template?.name?.includes('כיבויים');
+              const returnDraftId = localStorage.getItem('returnToDraftId');
+              localStorage.removeItem('returnToDraftId');
+              localStorage.removeItem('parentFormData');
+              localStorage.removeItem('pendingParentRowId');
+              localStorage.removeItem('pendingParentTemplateId');
               
-              // Step 1 (The Check): Robustly find the target ID
+              if (isFireSafety) {
+                window.history.back();
+                if (returnDraftId) {
+                  handleContinueDraft(returnDraftId);
+                } else {
+                  setIsAdding(false);
+                }
+              } else {
+                if (returnDraftId) {
+                  handleContinueDraft(returnDraftId);
+                } else {
+                  setIsAdding(false); 
+                  const url = new URL(window.location.href);
+                  if (url.searchParams.has('parentRowId')) {
+                    url.searchParams.delete('parentRowId');
+                    window.history.pushState({}, '', url.toString());
+                  }
+                  loadDrafts(); 
+                }
+              }
+              return;
+            }
+
+            if (type === 'REDIRECT_FORM') {
+              const { templateId, rowId, targetFormId, field, currentData, parentRowId } = payload as any;
+
+              // ============================================================
+              // פתיחת טופס בן
+              // LINK_BUTTON או navigation_config שולחים targetFormId
+              // ============================================================
+              localStorage.setItem('returnToDraftId', activeDraftId);
+              
               let targetId = targetFormId || 
                              field?.navigation_config?.targetFormId || 
                              field?.targetFormId || 
                              (field?.options as any)?.targetFormId ||
                              (field?.options as any)?.targetTemplateId;
 
-              // Fallback logic if no explicit ID found
               if (!targetId) {
                  const extTemplate = availableTemplates.find(t => 
                    t.name.includes('מטפים') || t.name.includes('Extinguisher')
@@ -602,33 +759,54 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
               }
 
               if (!targetId) {
+                 console.error("REDIRECT_FORM: no targetFormId and no templateId+rowId", payload);
                  alert('תבנית יעד לא הוגדרה עבור כפתור זה.');
                  return;
               }
 
-              // Step 2 (The Storage - ONLY ON CLICK)
+              // שמור נתוני האב לפני מעבר לבן
               if (currentData) {
-                localStorage.setItem('parentFormData', JSON.stringify(currentData));
+                // Ensure timestamps are formatted for Supabase
+                const now = new Date().toISOString();
+                const fieldsToUpdate = ['created_at', 'last_modified_client', 'updated_at'];
+                const processedCurrentData = { ...currentData };
+                fieldsToUpdate.forEach(field => {
+                  if (!processedCurrentData[field] || processedCurrentData[field] === "") {
+                    processedCurrentData[field] = now;
+                  }
+                });
+
+                localStorage.setItem('parentFormData', JSON.stringify(processedCurrentData));
+                if (processedCurrentData.customer_id) {
+                    localStorage.setItem('lastActiveCustomerId', processedCurrentData.customer_id);
+                }
+                
+                if (activeDraftId) {
+                    const draft = drafts.find(d => d.id === activeDraftId);
+                    if (draft) {
+                        await dbService.saveInspectionDraft({
+                            ...draft,
+                            data: { ...draft.data, ...processedCurrentData }
+                        });
+                    }
+                }
               }
 
-              // Try to find ANY valid ID
-              const recordId = currentData?.ROWID || 
-                               currentData?.id || 
+              const recordId = currentData?.id || 
+                               currentData?.ROWID || 
                                currentData?.inspectionSerialNumber || 
                                currentData?._id ||
-                               // Sometimes ID might be at the root if currentData is nested
                                (payload as any)?.id;
               
               if (recordId) {
                 localStorage.setItem('pendingParentRowId', recordId);
                 
-                // Also update URL for consistency
                 const url = new URL(window.location.href);
                 url.searchParams.set('parentRowId', recordId);
                 window.history.pushState({}, '', url.toString());
               }
 
-              // Step 3 (The Navigation)
+              console.log("REDIRECT_FORM → opening child form. Template:", targetId);
               handleStartNew(InspectionType.OTHER, targetId);
             }
           }}
@@ -664,7 +842,6 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
                   <Plus size={18} /> <span className="truncate">{t.name}</span>
                 </button>
               ))}
-              {/* Removed "Additional Inspections" dropdown per user request */}
             </div>
           ) : (
             <div className="flex flex-wrap gap-2 w-full md:w-auto">
@@ -709,7 +886,6 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
         <div className="bg-white rounded-3xl border border-slate-100 shadow-sm overflow-hidden">
           <div className="p-4 md:p-6 bg-slate-50/50 border-b flex items-center gap-2"><ClipboardList className="text-blue-600" size={20} /><h3 className="font-black text-slate-800">היסטוריית ביקורות</h3></div>
           
-          {/* Desktop Table View */}
           <div className="hidden md:block overflow-x-auto scrollbar-thin">
             <table className="w-full text-right text-sm">
               <thead className="bg-slate-50 border-b"><tr><th className="p-4">מס' ביקורת</th><th className="p-4">לקוח</th><th className="p-4">תאריך</th><th className="p-4">סטטוס</th><th className="p-4 text-center">פעולות</th></tr></thead>
@@ -748,7 +924,6 @@ const Inspections: React.FC<InspectionsProps> = ({ user }) => {
             </table>
           </div>
 
-          {/* Mobile Card View */}
           <div className="md:hidden divide-y divide-slate-100">
             {inspections.map(i => (
               <div key={i.id} className="p-4 space-y-3 hover:bg-slate-50 transition-colors">

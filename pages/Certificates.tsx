@@ -3,7 +3,7 @@ import React from 'react';
 import { Inspection, InspectionType, InspectionStatus, Customer, User, UserRole, FormTemplate, FieldType } from '../types';
 import { dbService } from '../services/dbService';
 import { offlineService } from '../services/offlineService';
-import { supabase } from '../services/supabaseClient';
+import { supabase } from '../src/lib/supabase';
 import { Plus, Search, Eye, Edit2, Loader2, ClipboardList, Clock, Trash2, Zap, Building, CreditCard, Fingerprint, FileCheck } from 'lucide-react';
 import DynamicForm from '../components/DynamicForm';
 
@@ -100,6 +100,23 @@ const Certificates: React.FC<CertificatesProps> = ({ user }) => {
       if (!t || !t.fields || t.fields.length === 0) {
         alert("שגיאה: לא נמצאה תבנית פעילה עבור סוג זה.");
         return;
+      }
+
+      localStorage.removeItem('pendingParentRowId');
+      localStorage.removeItem('parentFormData');
+      const url = new URL(window.location.href);
+      if (url.searchParams.has('parentRowId')) {
+        url.searchParams.delete('parentRowId');
+        window.history.pushState({}, '', url.toString());
+      } else if (url.hash.includes('parentRowId=')) {
+        const [hashPath, hashQuery] = url.hash.split('?');
+        if (hashQuery) {
+          const hashParams = new URLSearchParams(hashQuery);
+          hashParams.delete('parentRowId');
+          const newHash = hashParams.toString() ? `${hashPath}?${hashParams.toString()}` : hashPath;
+          url.hash = newHash;
+          window.history.pushState({}, '', url.toString());
+        }
       }
 
       setSelectedType(type);
@@ -212,23 +229,31 @@ const Certificates: React.FC<CertificatesProps> = ({ user }) => {
       const parentData = Array.isArray(savedParent) ? savedParent[0] : savedParent;
       const parentFriendlyId = parentData.ROWID || parentData.serial_number || parentData.inspectionSerialNumber || parentData.id;
 
+      localStorage.removeItem('parentFormData');
+      localStorage.removeItem('pendingParentRowId');
+
       // TRIGGER AUTOMATION BOTS
       console.log(`[Automation] Triggering bots for inspections with ID: ${parentFriendlyId}`);
       // triggerBots is now handled by SyncEngine after successful sync
       // dbService.triggerBots('inspections', parentFriendlyId, 'ADDS');
 
       const isFireSafety = template?.name?.includes('כיבויים');
+      const returnDraftId = localStorage.getItem('returnToDraftId');
+      localStorage.removeItem('returnToDraftId');
+
       if (isFireSafety) {
         window.history.back();
-        const returnDraftId = localStorage.getItem('returnToDraftId');
         if (returnDraftId) {
           handleContinueDraft(returnDraftId);
-          localStorage.removeItem('returnToDraftId');
         } else {
           setIsAdding(false);
         }
       } else {
-        setIsAdding(false);
+        if (returnDraftId) {
+          handleContinueDraft(returnDraftId);
+        } else {
+          setIsAdding(false);
+        }
       }
       await loadData();
     } catch (err: any) {
@@ -299,18 +324,39 @@ const Certificates: React.FC<CertificatesProps> = ({ user }) => {
           onSubmit={handleCreate} 
           onCancel={() => { 
             const isFireSafety = template?.name?.includes('כיבויים');
+            const returnDraftId = localStorage.getItem('returnToDraftId');
+            localStorage.removeItem('returnToDraftId');
+            localStorage.removeItem('parentFormData');
+            localStorage.removeItem('pendingParentRowId');
+            
             if (isFireSafety) {
               window.history.back();
-              const returnDraftId = localStorage.getItem('returnToDraftId');
               if (returnDraftId) {
                 handleContinueDraft(returnDraftId);
-                localStorage.removeItem('returnToDraftId');
               } else {
                 setIsAdding(false);
               }
             } else {
-              setIsAdding(false); 
-              loadDrafts(); 
+              if (returnDraftId) {
+                handleContinueDraft(returnDraftId);
+              } else {
+                setIsAdding(false); 
+                const url = new URL(window.location.href);
+                if (url.searchParams.has('parentRowId')) {
+                  url.searchParams.delete('parentRowId');
+                  window.history.pushState({}, '', url.toString());
+                } else if (url.hash.includes('parentRowId=')) {
+                  const [hashPath, hashQuery] = url.hash.split('?');
+                  if (hashQuery) {
+                    const hashParams = new URLSearchParams(hashQuery);
+                    hashParams.delete('parentRowId');
+                    const newHash = hashParams.toString() ? `${hashPath}?${hashParams.toString()}` : hashPath;
+                    url.hash = newHash;
+                    window.history.pushState({}, '', url.toString());
+                  }
+                }
+                loadDrafts(); 
+              }
             }
           }} 
           onSwitchDraft={handleContinueDraft} 

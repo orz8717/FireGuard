@@ -58,7 +58,7 @@ const Layout: React.FC<LayoutProps> = ({ children, user, onLogout, activeScreen,
   };
 
   const SidebarContent = () => {
-  const { isOnline: syncOnline, pendingCount, isSyncing, isRetrying, syncStatus, triggerSync, lastSyncTime } = useSync();
+  const { isOnline: syncOnline, pendingCount, isSyncing, isRetrying, triggerSync, lastSyncTime } = useSync();
   
   // הוספת Listener מקומי כדי להבטיח תגובה מיידית ב-UI
   const [localOnline, setLocalOnline] = React.useState(navigator.onLine);
@@ -77,12 +77,8 @@ const Layout: React.FC<LayoutProps> = ({ children, user, onLogout, activeScreen,
   const isOnline = localOnline && syncOnline;
 
   const getStatusMessage = () => {
-    switch (syncStatus) {
-      case 'waiting_for_auth': return 'ממתין לחיבור...';
-      case 'syncing': return 'מסנכרן...';
-      case 'error': return 'שגיאת סנכרון';
-      default: return isOnline ? 'מחובר' : 'לא מחובר';
-    }
+    if (isSyncing) return 'מסנכרן...';
+    return isOnline ? 'מחובר' : 'לא מחובר';
   };
 
   return (
@@ -102,10 +98,10 @@ const Layout: React.FC<LayoutProps> = ({ children, user, onLogout, activeScreen,
           {/* Sync Status at the top */}
           <div className="flex flex-col gap-2">
             <div className={`flex items-center justify-between px-3 py-2 rounded-lg transition-colors ${
-              isOnline && syncStatus !== 'waiting_for_auth' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-rose-500/10 text-rose-500'
+              isOnline ? 'bg-emerald-500/10 text-emerald-500' : 'bg-rose-500/10 text-rose-500'
             }`}>
               <div className="flex items-center gap-2">
-                {isOnline && syncStatus !== 'waiting_for_auth' ? <Wifi size={14} /> : <WifiOff size={14} />}
+                {isOnline ? <Wifi size={14} /> : <WifiOff size={14} />}
                 <span className="text-[10px] font-bold uppercase tracking-wider">{getStatusMessage()}</span>
               </div>
               

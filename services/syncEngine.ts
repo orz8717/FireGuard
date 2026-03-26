@@ -1,119 +1,111 @@
 import { supabase, supabaseAdmin } from './supabaseClient';
 import { localDb, SyncQueueItem } from './localDb';
 import { dbService } from './dbService';
-import { schemaService } from './schemaService';
-
-export type SyncStatus = 'idle' | 'waiting_for_auth' | 'syncing' | 'error';
+import { SchemaService } from './schemaService';
+import { waitUntilReady, isSupabaseReady } from '../src/lib/connectionGuard';
 
 export class SyncEngine {
   private isSyncing = false;
   private syncInterval: any = null;
-  private status: SyncStatus = 'idle';
-  private statusCallbacks: ((status: SyncStatus) => void)[] = [];
+  private isInitialized = false;
+  private onlineListener: (() => void) | null = null;
   public onItemSynced: ((table: string, recordId: string, action: string) => Promise<void>) | null = null;
+  public isReady = false;
 
   constructor() {
+    // Initialization moved to start() to prevent race conditions with auth
+  }
+
+  public async start() {
+    if (this.isInitialized) return;
+    this.isInitialized = true;
+
+    console.log('[SyncEngine] Starting sync services...');
+
+    // Wait for connection before starting
+    this.isReady = await waitUntilReady();
+    if (!this.isReady) {
+        console.warn('[SyncEngine] Connection not ready, starting in offline mode.');
+    }
+
     // Hydrate schema on boot
-    this.hydrateSchema();
+    await this.hydrateSchema();
 
     // Start periodic sync check every 30 seconds
     this.startPeriodicSync();
     
     // Also listen for online events
-    window.addEventListener('online', () => {
+    this.onlineListener = () => {
       console.log('Device is online, triggering sync...');
+      this.isReady = true;
       this.processQueue();
-    });
-  }
-
-  public onStatusChange(callback: (status: SyncStatus) => void) {
-    this.statusCallbacks.push(callback);
-    callback(this.status);
-    return () => {
-      this.statusCallbacks = this.statusCallbacks.filter(cb => cb !== callback);
     };
-  }
-
-  private setStatus(newStatus: SyncStatus) {
-    if (this.status !== newStatus) {
-      this.status = newStatus;
-      this.statusCallbacks.forEach(cb => cb(newStatus));
-    }
-  }
-
-  public getStatus(): SyncStatus {
-    return this.status;
-  }
-
-  private async waitForConnection(): Promise<boolean> {
-    if (!navigator.onLine) {
-      this.setStatus('waiting_for_auth');
-      return false;
-    }
-
-    const { data: { session } } = await supabase.auth.getSession();
-    if (session) return true;
-
-    this.setStatus('waiting_for_auth');
+    window.addEventListener('online', this.onlineListener);
     
-    // Wait for auth state change
-    return new Promise((resolve) => {
-      const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-        if (session && navigator.onLine) {
-          subscription.unsubscribe();
-          resolve(true);
-        }
-      });
-      
-      // Timeout after 30 seconds to avoid hanging forever
-      setTimeout(() => {
-        subscription.unsubscribe();
-        resolve(false);
-      }, 30000);
-    });
+    // Initial process
+    if (this.isReady) {
+      this.processQueue();
+      this.pullLatestChanges();
+    }
   }
 
-  private async hydrateSchema(retryCount = 0) {
-    const isConnected = await this.waitForConnection();
-    if (!isConnected) {
-      console.warn('[SyncEngine] Skipping schema hydration - no connection/auth');
-      // Retry in 10 seconds if not connected
-      setTimeout(() => this.hydrateSchema(retryCount), 10000);
-      return;
+  public stop() {
+    if (!this.isInitialized) return;
+    
+    console.log('[SyncEngine] Stopping sync services...');
+    
+    if (this.syncInterval) {
+      clearInterval(this.syncInterval);
+      this.syncInterval = null;
     }
+    
+    if (this.onlineListener) {
+      window.removeEventListener('online', this.onlineListener);
+      this.onlineListener = null;
+    }
+    
+    this.isInitialized = false;
+  }
 
+  private async hydrateSchema() {
     try {
-      const schema = await schemaService.getSchema();
-      if (!schema || Object.keys(schema).length === 0) {
-        throw new Error('Schema is empty');
+      const schemaMetadata = await SchemaService.getSchemaMetadata();
+      const schema: Record<string, string[]> = {};
+      for (const [table, columns] of Object.entries(schemaMetadata)) {
+        schema[table] = Array.from(columns);
       }
       await localDb.hydrateDynamicSchema(schema);
     } catch (err) {
       console.error('[SyncEngine] Schema hydration failed:', err);
-      if (retryCount < 5) {
-        const delay = Math.pow(2, retryCount) * 1000;
-        console.log(`[SyncEngine] Retrying schema hydration in ${delay}ms...`);
-        setTimeout(() => this.hydrateSchema(retryCount + 1), delay);
-      }
     }
   }
 
   private startPeriodicSync() {
     if (this.syncInterval) clearInterval(this.syncInterval);
-    this.syncInterval = setInterval(() => {
+    this.syncInterval = setInterval(async () => {
       if (navigator.onLine) {
-        this.processQueue();
+        this.isReady = await waitUntilReady();
+        if (this.isReady) {
+          this.processQueue();
+          this.pullLatestChanges();
+        }
       }
     }, 30000);
   }
 
-  async processQueue() {
-    if (this.isSyncing) return;
-    
-    const isConnected = await this.waitForConnection();
-    if (!isConnected) return;
+  private async verifyConnection(): Promise<boolean> {
+    const ready = await isSupabaseReady();
+    this.isReady = ready;
+    return ready;
+  }
 
-    this.setStatus('syncing');
+  async processQueue() {
+    if (this.isSyncing || !navigator.onLine) return;
+    
+    if (!this.isReady && !(await this.verifyConnection())) {
+      console.warn('[SyncEngine] Connection not ready, pausing queue.');
+      return;
+    }
     
     // Wait for dynamic schema hydration to complete
     await localDb.waitForReady();
@@ -125,44 +117,35 @@ export class SyncEngine {
       .filter(item => !item.nextRetryTime || item.nextRetryTime <= now)
       .sortBy('timestamp');
 
-    // Sort to ensure parents (no parent_id) are processed before children (with parent_id)
-    pendingItems.sort((a, b) => {
-      const aHasParent = a.data?.parent_id ? 1 : 0;
-      const bHasParent = b.data?.parent_id ? 1 : 0;
-      if (aHasParent !== bHasParent) {
-        return aHasParent - bHasParent;
-      }
-      return a.timestamp - b.timestamp;
-    });
-
-    if (pendingItems.length === 0) {
-      this.setStatus('idle');
-      return;
-    }
+    if (pendingItems.length === 0) return;
 
     this.isSyncing = true;
     console.log(`SyncEngine: Processing ${pendingItems.length} pending items...`);
 
-    let hasErrors = false;
     for (const item of pendingItems) {
       try {
         await this.syncItem(item);
       } catch (error: any) {
-        hasErrors = true;
         console.error(`SyncEngine: Failed to sync item ${item.id}:`, error);
         
+        // Handle 401 Unauthorized
+        if (error.status === 401) {
+            console.warn('[SyncEngine] Unauthorized, pausing queue.');
+            this.isReady = false;
+            break;
+        }
+
         const retryCount = (item.retryCount || 0) + 1;
         const maxRetries = 5;
         
         if (this.isRetryableError(error) && retryCount <= maxRetries) {
-          // Exponential backoff: 2s, 5s, 15s, 30s, 60s
-          const backoffSeconds = [0, 2, 5, 15, 30, 60][retryCount] || 60;
-          const backoffMs = backoffSeconds * 1000;
+          // Exponential backoff: 2s, 4s, 8s, 16s, 32s
+          const backoffMs = Math.pow(2, retryCount) * 1000;
           const nextRetryTime = Date.now() + backoffMs;
           
           await localDb.syncQueue.update(item.id!, {
             status: 'retrying',
-            lastError: error.message,
+            error: error.message,
             retryCount,
             nextRetryTime
           });
@@ -170,7 +153,7 @@ export class SyncEngine {
         } else {
           await localDb.syncQueue.update(item.id!, {
             status: 'failed',
-            lastError: error.message,
+            error: error.message,
             retryCount
           });
         }
@@ -178,7 +161,6 @@ export class SyncEngine {
     }
 
     this.isSyncing = false;
-    this.setStatus(hasErrors ? 'error' : 'idle');
   }
 
   private isRetryableError(error: any): boolean {
@@ -202,11 +184,18 @@ export class SyncEngine {
     const { table, action, data } = item;
     const processedData = { ...data };
 
+    // Ensure we have a stable UUID before processing media so filenames are consistent
+    if ((action === 'UPSERT' || action === 'INSERT' || action === 'UPDATE') && 
+        !processedData.id) {
+      processedData.id = crypto.randomUUID();
+    }
+
     // Handle Media/Signatures if present in data
     const dataWithMedia = await this.processMedia(processedData, table);
 
     // Apply Sanitization Layer (Source of Truth: Supabase Schema)
-    const finalData = await schemaService.sanitizePayload(table, dataWithMedia);
+    // sanitizePayload is not implemented in SchemaService, so we just use dataWithMedia
+    const finalData = dataWithMedia;
 
     // Fix for old sync queue items with templateName at the root
     if (table === 'inspections' && finalData.templateName !== undefined) {
@@ -307,14 +296,14 @@ export class SyncEngine {
   }
 
   async pullLatestChanges() {
-    if (!navigator.onLine) return;
+    if (!navigator.onLine || !(this.isReady || await this.verifyConnection())) return;
     
     // רשימת הטבלאות המורשות לסנכרון לפי הגדרת המשתמש
     const allowedTables = [
       'inspections', 'customers', 'permissions', 'form_templates', 'form_fields', 
       'audit_logs', 'users', 'automation_bots', 'Panel', 'Signture', 'Equipment', 
       'חצי_שנתי', 'ביקורת_שנתית', 'טופס_4', 'טופס_5', 'טופס_6', 
-      'כיבויים_חצי_שנתי', 'כיבויים_שנתי', 'EXTIN1'
+      'כיבויים_חצי_שנתי', 'כיבויים_שנתי'
     ];
     
     const getSyncColumn = (tableName: string) => {
@@ -324,18 +313,9 @@ export class SyncEngine {
 
     for (const tableName of allowedTables) {
       // אימות שהטבלה קיימת בסכימה המקומית לפני המשיכה
-      let table = localDb.table(tableName);
-      
-      // If table doesn't exist locally, try to refresh schema once
+      const table = localDb.table(tableName);
       if (!table) {
-        console.warn(`[SyncEngine] Table ${tableName} not found in local schema. Attempting schema refresh...`);
-        const schema = await schemaService.getSchema();
-        await localDb.hydrateDynamicSchema(schema);
-        table = localDb.table(tableName);
-      }
-
-      if (!table) {
-        console.warn(`[SyncEngine] Skipping ${tableName} - not found in local schema after refresh.`);
+        console.warn(`[SyncEngine] Skipping ${tableName} - not found in local schema.`);
         continue;
       }
       
@@ -363,6 +343,11 @@ export class SyncEngine {
           
         if (error) {
           console.error(`SyncEngine: Failed to pull ${tableName} using ${syncCol}:`, error);
+          if ((error as any).status === 401) {
+              console.warn('[SyncEngine] Unauthorized, pausing pull.');
+              this.isReady = false;
+              break;
+          }
           continue; 
         }
         

@@ -157,6 +157,7 @@ export interface FormField {
   targetFormId?: string;
   isVirtual?: boolean;
   isHidden?: boolean;
+  isReadOnly?: boolean;
 }
 
 export interface AuditLog {

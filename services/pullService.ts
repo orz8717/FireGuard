@@ -1,6 +1,5 @@
 import { supabase } from './supabaseClient';
 import { localDb } from './localDb';
-import { schemaService } from './schemaService';
 
 // מיפוי עמודות הסנכרון המלא לכל הטבלאות באפליקציה (מונע שגיאות 42703)
 const tableSyncConfig: Record<string, string> = {
@@ -97,26 +96,17 @@ export const pullService = {
       'inspections', 'customers', 'permissions', 'form_templates', 'form_fields', 
       'audit_logs', 'users', 'automation_bots', 'Panel', 'Signture', 'Equipment', 
       'חצי_שנתי', 'ביקורת_שנתית', 'טופס_4', 'טופס_5', 'טופס_6', 
-      'כיבויים_חצי_שנתי', 'כיבויים_שנתי', 'EXTIN1'
+      'כיבויים_חצי_שנתי', 'כיבויים_שנתי'
     ];
     
     try {
       for (const tableName of allowedTables) {
         // אימות שהטבלה קיימת בסכימה המקומית לפני המשיכה
-        let table = localDb.table(tableName);
-        
-        // If table doesn't exist locally, try to refresh schema once
-        if (!table) {
-          console.warn(`[PullService] Table ${tableName} not found in local schema. Attempting schema refresh...`);
-          const schema = await schemaService.getSchema();
-          await localDb.hydrateDynamicSchema(schema);
-          table = localDb.table(tableName);
-        }
-
+        const table = localDb.table(tableName);
         if (table) {
           await this.pullTable(tableName);
         } else {
-          console.warn(`[PullService] Skipping ${tableName} - not found in local schema after refresh.`);
+          console.warn(`[PullService] Skipping ${tableName} - not found in local schema.`);
         }
       }
     } catch (error) {
@@ -126,14 +116,23 @@ export const pullService = {
   },
 
   startPeriodicSync() {
+    if ((this as any)._syncInterval) clearInterval((this as any)._syncInterval);
+    
     // הרצה ראשונית עם תפיסת שגיאות
     this.pullAllTables().catch(() => {});
 
     // בדיקה בכל 5 דקות
-    setInterval(() => {
+    (this as any)._syncInterval = setInterval(() => {
       this.pullAllTables().catch(err => {
         console.warn("[PullService] Periodic sync failed (likely offline)");
       });
     }, 5 * 60 * 1000);
+  },
+
+  stopPeriodicSync() {
+    if ((this as any)._syncInterval) {
+      clearInterval((this as any)._syncInterval);
+      (this as any)._syncInterval = null;
+    }
   }
 };

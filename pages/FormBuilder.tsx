@@ -37,7 +37,6 @@ import {
 } from 'lucide-react';
 import DynamicForm from '../components/DynamicForm';
 import { authService } from '../services/authService';
-import { usePermissions } from '../src/context/PermissionContext';
 
 // --- SUPPLEMENTAL: FUNCTION PARAMETER DEFINITIONS ---
 type ParamType = 'field' | 'table' | 'column' | 'text' | 'number' | 'boolean';
@@ -60,8 +59,7 @@ interface FuncMeta {
 const FieldRow = React.memo(({ 
   field, 
   idx, 
-  canEdit,
-  canDelete,
+  isAdmin, 
   moveField, 
   setEditingField, 
   setEditTab, 
@@ -70,8 +68,7 @@ const FieldRow = React.memo(({
 }: {
   field: FormField;
   idx: number;
-  canEdit: boolean;
-  canDelete: boolean;
+  isAdmin: boolean;
   moveField: (index: number, direction: 'up' | 'down') => void;
   setEditingField: (field: FormField) => void;
   setEditTab: (tab: 'general' | 'logic' | 'options' | 'preview') => void;
@@ -86,7 +83,7 @@ const FieldRow = React.memo(({
       <div className="flex items-center gap-3 md:gap-5 w-full sm:w-auto">
         <div className={`p-2 md:p-3 rounded-2xl transition-all shrink-0 flex items-center gap-1 ${field.isVirtual ? 'bg-orange-50 text-orange-400 group-hover:text-orange-600 group-hover:bg-orange-100' : 'bg-slate-50 text-slate-400 group-hover:text-blue-600 group-hover:bg-blue-50'}`}>
           <GripVertical size={20} className="md:w-[22px] md:h-[22px]" />
-          {canEdit && (
+          {isAdmin && (
             <div className="flex flex-col gap-0.5 ml-1">
               <button 
                 onClick={(e) => { e.stopPropagation(); moveField(idx, 'up'); }}
@@ -125,7 +122,7 @@ const FieldRow = React.memo(({
         {field.calculationFormula && <Calculator size={16} className="text-purple-500" />}
         {field.visibilityCondition && <Eye size={16} className="text-blue-500" />}
         {field.fieldType === FieldType.LINK_BUTTON && <Zap size={16} className="text-yellow-500" />}
-        {canDelete && (
+        {isAdmin && (
           <button 
             onClick={(e) => onDelete(e, field)} 
             className="p-2 text-slate-300 hover:text-red-600 rounded-lg transition-all min-h-[44px] min-w-[44px] flex items-center justify-center bg-slate-50 sm:bg-transparent"
@@ -149,8 +146,7 @@ const FieldRow = React.memo(({
     prev.field.isRequired === next.field.isRequired &&
     prev.field.options === next.field.options &&
     prev.idx === next.idx &&
-    prev.canEdit === next.canEdit &&
-    prev.canDelete === next.canDelete &&
+    prev.isAdmin === next.isAdmin &&
     prev.localFieldsLength === next.localFieldsLength &&
     prev.moveField === next.moveField &&
     prev.onDelete === next.onDelete &&
@@ -256,18 +252,37 @@ const DETAILED_DOCS: Record<string, FuncMeta> = {
     ]
   },
   'UNIQUEID': { desc: 'מייצר מזהה ייחודי אקראי.', syntax: 'UNIQUEID()', example: 'UNIQUEID()', params: [] },
+  'UNIQUEID_V4': { desc: 'מייצרת מזהה ייחודי גלובלי (UUID) תקני.', syntax: 'UNIQUEID_V4()', example: 'UNIQUEID_V4()', params: [] },
   'USEREMAIL': { desc: 'מחזיר את מייל המשתמש.', syntax: 'USEREMAIL()', example: 'USEREMAIL()', params: [] },
   'USERNAME': { desc: 'מחזיר את שם המשתמש.', syntax: 'USERNAME()', example: 'USERNAME()', params: [] },
-  'USERROLE': { desc: 'מחזיר את הרשאת המשתמש.', syntax: 'USERROLE()', example: 'USERROLE()', params: [] }
+  'USERROLE': { desc: 'מחזיר את הרשאת המשתמש.', syntax: 'USERROLE()', example: 'USERROLE()', params: [] },
+  'COALESCE': { desc: 'מחזירה את הערך הראשון ברשימה שאינו ריק או NULL.', syntax: 'COALESCE(val1, val2, ...)', example: "COALESCE([Phone], [Mobile], 'אין מספר')", params: [] },
+  'ISNUMBER': { desc: 'בודקת האם הערך הוא מספר תקין.', syntax: 'ISNUMBER(value)', example: 'ISNUMBER([Amount])', params: [] },
+  'ISDATE': { desc: 'בודקת האם הטקסט הוא פורמט תאריך תקין.', syntax: 'ISDATE(text)', example: "ISDATE('2024-01-01')", params: [] },
+  'ROUNDUP': { desc: 'מעגלת מספר כלפי מעלה למספר השלם הקרוב.', syntax: 'ROUNDUP(number)', example: 'ROUNDUP(10.2) -> 11', params: [] },
+  'ROUNDDOWN': { desc: 'מעגלת מספר כלפי מטה למספר השלם הקרוב.', syntax: 'ROUNDDOWN(number)', example: 'ROUNDDOWN(10.8) -> 10', params: [] },
+  'SIGN': { desc: 'מחזירה 1 למספר חיובי, -1 לשלילי ו-0 לאפס.', syntax: 'SIGN(number)', example: 'SIGN(-5) -> -1', params: [] },
+  'SPLIT': { desc: 'מפצלת טקסט למערך לפי תו מפריד.', syntax: 'SPLIT(text, separator)', example: "SPLIT('אדום,כחול', ',')", params: [] },
+  'REPLACE': { desc: 'מחליפה חלק מטקסט בטקסט חדש לפי מיקום ואורך.', syntax: 'REPLACE(text, start, num_chars, new_text)', example: "REPLACE('12345', 2, 3, 'ABC')", params: [] },
+  'TEXT': { desc: 'ממירה ערך לטקסט (תאריכים יומרו לפורמט ישראלי).', syntax: 'TEXT(value)', example: 'TEXT(TODAY())', params: [] },
+  'EOMONTH': { desc: 'מחזירה את היום האחרון בחודש, עם היסט חודשים.', syntax: 'EOMONTH(date, months_offset)', example: 'EOMONTH(TODAY(), 0)', params: [] },
+  'DATEDIF': { desc: 'מחשבת הפרש בין תאריכים בימים (D), חודשים (M) או שנים (Y).', syntax: 'DATEDIF(start, end, unit)', example: "DATEDIF('2023-01-01', TODAY(), 'Y')", params: [] },
+  'WORKDAY': { desc: 'מחשבת תאריך יעד לאחר מספר ימי עסקים (ללא שישי-שבת).', syntax: 'WORKDAY(start_date, days)', example: 'WORKDAY(TODAY(), 5)', params: [] },
+  'INDEX': { desc: 'שולפת איבר מרשימה לפי מיקום (מתחיל ב-1).', syntax: 'INDEX(list, position)', example: "INDEX(SPLIT('A,B,C', ','), 2) -> 'B'", params: [] },
+  'TOP': { desc: 'מחזירה את X האיברים הראשונים מהרשימה.', syntax: 'TOP(list, number)', example: 'TOP([Related Items], 3)', params: [] },
+  'UNION': { desc: 'מאחדת שתי רשימות לרשימה אחת ללא כפילויות.', syntax: 'UNION(list1, list2)', example: 'UNION([Tags1], [Tags2])', params: [] },
+  'INTERSECT': { desc: 'מחזירה רק איברים שמופיעים בשתי הרשימות.', syntax: 'INTERSECT(list1, list2)', example: 'INTERSECT([UserRoles], [PageRoles])', params: [] },
+  'LIST': { desc: 'יוצרת רשימה מערכים בודדים.', syntax: 'LIST(val1, val2, ...)', example: "LIST('High', 'Medium', 'Low')", params: [] },
+  'DURATION': { desc: 'הופכת שניות לפורמט זמן קריא (HH:MM:SS).', syntax: 'DURATION(seconds)', example: "DURATION(3660) -> '01:01:00'", params: [] }
 };
 
 const FORMULA_FUNCTIONS = [
-  { group: 'Logical (לוגיקה)', icon: <ShieldCheck size={14} />, items: ['IF', 'IFS', 'SWITCH', 'AND', 'OR', 'NOT', 'ISBLANK', 'ISNOTBLANK', 'TRUE', 'FALSE'] },
-  { group: 'Text (טקסט)', icon: <TextIcon size={14} />, items: ['CONCATENATE', 'EXACT', 'FIND', 'LEFT', 'LEN', 'LOWER', 'MID', 'RIGHT', 'SUBSTITUTE', 'TRIM', 'UPPER', 'CONTAINS', 'INITIALS'] },
-  { group: 'Math (מתמטיקה)', icon: <Calculator size={14} />, items: ['ABS', 'CEILING', 'FLOOR', 'ROUND', 'MOD', 'POWER', 'SQRT', 'LOG', 'LN', 'EXP', 'MAX', 'MIN', 'AVERAGE', 'COUNT', 'SUM', 'RANDBETWEEN'] },
-  { group: 'Date & Time (תאריך ושעה)', icon: <Clock size={14} />, items: ['TODAY', 'NOW', 'TIMENOW', 'DAY', 'MONTH', 'YEAR', 'HOUR', 'MINUTE', 'SECOND'] },
-  { group: 'List & Ref (רשימות והפניות)', icon: <List size={14} />, items: ['ANY', 'IN', 'UNIQUE', 'SORT', 'LOOKUP'] },
-  { group: 'System (מערכת)', icon: <Zap size={14} />, items: ['UNIQUEID', 'USEREMAIL', 'USERNAME', 'USERROLE'] }
+  { group: 'Logical (לוגיקה)', icon: <ShieldCheck size={14} />, items: ['IF', 'IFS', 'SWITCH', 'AND', 'OR', 'NOT', 'ISBLANK', 'ISNOTBLANK', 'TRUE', 'FALSE', 'COALESCE', 'ISNUMBER', 'ISDATE'] },
+  { group: 'Text (טקסט)', icon: <TextIcon size={14} />, items: ['CONCATENATE', 'EXACT', 'FIND', 'LEFT', 'LEN', 'LOWER', 'MID', 'RIGHT', 'SUBSTITUTE', 'TRIM', 'UPPER', 'CONTAINS', 'INITIALS', 'SPLIT', 'REPLACE', 'TEXT'] },
+  { group: 'Math (מתמטיקה)', icon: <Calculator size={14} />, items: ['ABS', 'CEILING', 'FLOOR', 'ROUND', 'MOD', 'POWER', 'SQRT', 'LOG', 'LN', 'EXP', 'MAX', 'MIN', 'AVERAGE', 'COUNT', 'SUM', 'RANDBETWEEN', 'ROUNDUP', 'ROUNDDOWN', 'SIGN'] },
+  { group: 'Date & Time (תאריך ושעה)', icon: <Clock size={14} />, items: ['TODAY', 'NOW', 'TIMENOW', 'DAY', 'MONTH', 'YEAR', 'HOUR', 'MINUTE', 'SECOND', 'EOMONTH', 'DATEDIF', 'WORKDAY', 'DURATION'] },
+  { group: 'List & Ref (רשימות והפניות)', icon: <List size={14} />, items: ['ANY', 'IN', 'UNIQUE', 'SORT', 'LOOKUP', 'INDEX', 'TOP', 'UNION', 'INTERSECT', 'LIST'] },
+  { group: 'System (מערכת)', icon: <Zap size={14} />, items: ['UNIQUEID', 'UNIQUEID_V4', 'USEREMAIL', 'USERNAME', 'USERROLE'] }
 ];
 
 // --- EDITOR WITH HIGHLIGHTING ---
@@ -553,11 +568,7 @@ const ParameterAssistant: React.FC<{
   );
 };
 
-interface FormBuilderProps {
-  user: User;
-}
-
-const FormBuilder: React.FC<FormBuilderProps> = ({ user }) => {
+const FormBuilder: React.FC = () => {
   const [templates, setTemplates] = React.useState<FormTemplate[]>([]);
   const [customers, setCustomers] = React.useState<Customer[]>([]);
   const [users, setUsers] = React.useState<User[]>([]);
@@ -591,16 +602,11 @@ const FormBuilder: React.FC<FormBuilderProps> = ({ user }) => {
   const [aiResponse, setAiResponse] = React.useState('');
   const [isAiLoading, setIsAiLoading] = React.useState(false);
   const [syncSuccess, setSyncSuccess] = React.useState(false);
-  const { hasPermission } = usePermissions();
-  const canEditForm = hasPermission('form_builder', 'canEdit');
-  const canDeleteForm = hasPermission('form_builder', 'canDelete');
 
   const handleMirrorSync = async (tableName?: string) => {
     const targetTable = tableName || localTableName;
-    if (!targetTable || !selectedTemplateId) {
-      if (!targetTable) {
-        setSyncConfig({ isOpen: true, tables: [], selectedTable: null, diff: null, isLoading: false });
-      }
+    if (!targetTable) {
+      setSyncConfig({ isOpen: true, tables: [], selectedTable: null, diff: null, isLoading: false });
       return;
     }
 
@@ -608,80 +614,52 @@ const FormBuilder: React.FC<FormBuilderProps> = ({ user }) => {
     try {
       // 1. Schema Fetching: Fetch table schema including ordinal_position
       const dbCols = await dbService.getTableColumns(targetTable);
-      const virtualCols = await dbService.getVirtualColumns(targetTable);
-      
-      if ((!dbCols || dbCols.length === 0) && virtualCols.length === 0) {
+      if (!dbCols || dbCols.length === 0) {
         alert('לא ניתן היה למשוך עמודות מהטבלה הנבחרת.');
         return;
       }
 
       const existingFields = [...localFields];
+      const existingKeys = existingFields.map(f => f.fieldKey.trim());
+      
+      // Identify missing columns (Sanitized)
+      const missingCols = dbCols.filter(c => !existingKeys.includes(c.column_name.trim()));
+      
+      const newFields: FormField[] = missingCols.map((col, idx) => ({
+        id: `temp_sync_${Date.now()}_${idx}`,
+        formTemplateId: selectedTemplateId!,
+        fieldKey: col.column_name.trim(),
+        label: col.column_name.trim(),
+        fieldType: col.data_type.includes('int') || col.data_type.includes('num') ? FieldType.NUMBER : FieldType.TEXT,
+        orderIndex: col.ordinal_position,
+        isRequired: false
+      }));
+
+      const combinedFields = [...existingFields, ...newFields];
+
+      // 2. Strict Mapping & Filtering: Create a new array by iterating over dbCols (Source of Truth)
       const finalFields: FormField[] = [];
-      const processedKeys = new Set<string>();
-
-      // 1. Process Real Columns (Source of Truth for these)
+      const dbColumnNames = dbCols.map(c => c.column_name.trim());
+      
+      // First, add fields that exist in the DB in their correct order
       dbCols.forEach(col => {
-        const key = col.column_name.trim();
-        const existing = existingFields.find(f => f.fieldKey.trim() === key);
-        
-        if (existing) {
+        const matchingField = combinedFields.find(f => f.fieldKey.trim() === col.column_name.trim());
+        if (matchingField) {
           finalFields.push({
-            ...existing,
-            orderIndex: col.ordinal_position,
-            isVirtual: false
-          });
-        } else {
-          finalFields.push({
-            id: crypto.randomUUID(),
-            formTemplateId: selectedTemplateId!,
-            fieldKey: key,
-            label: key,
-            fieldType: col.data_type.includes('int') || col.data_type.includes('num') ? FieldType.NUMBER : FieldType.TEXT,
-            orderIndex: col.ordinal_position,
-            isRequired: false,
-            isVirtual: false
+            ...matchingField,
+            orderIndex: col.ordinal_position // Hard Reset of OrderIndex
           });
         }
-        processedKeys.add(key);
       });
 
-      // 2. Process Virtual Columns
-      virtualCols.forEach((vCol, idx) => {
-        const key = vCol.trim();
-        if (processedKeys.has(key)) return; // Already processed as real column
-
-        const existing = existingFields.find(f => f.fieldKey.trim() === key);
-        const order = dbCols.length + idx + 1;
-
-        if (existing) {
-          finalFields.push({
-            ...existing,
-            orderIndex: order,
-            isVirtual: true
-          });
-        } else {
-          finalFields.push({
-            id: crypto.randomUUID(),
-            formTemplateId: selectedTemplateId!,
-            fieldKey: key,
-            label: key,
-            fieldType: FieldType.TEXT,
-            orderIndex: order,
-            isRequired: false,
-            isVirtual: true
-          });
-        }
-        processedKeys.add(key);
-      });
-
-      // 3. Keep everything else (Manually defined fields, Link Buttons, etc.)
-      const remainingFields = existingFields.filter(f => !processedKeys.has(f.fieldKey.trim()));
-      const maxOrderSoFar = finalFields.length > 0 ? Math.max(...finalFields.map(f => f.orderIndex)) : 0;
-
-      remainingFields.forEach((f, idx) => {
+      // Second, add fields that exist in the app but NOT in the DB (like LINK_BUTTONs) at the end
+      const nonDbFields = combinedFields.filter(f => !dbColumnNames.includes(f.fieldKey.trim()));
+      const maxDbOrder = Math.max(...dbCols.map(c => c.ordinal_position), 0);
+      
+      nonDbFields.forEach((f, idx) => {
         finalFields.push({
           ...f,
-          orderIndex: maxOrderSoFar + idx + 1
+          orderIndex: maxDbOrder + idx + 1
         });
       });
 
@@ -709,7 +687,6 @@ const FormBuilder: React.FC<FormBuilderProps> = ({ user }) => {
       
       if (syncConfig) setSyncConfig(null);
     } catch (err) {
-      console.error('Sync error:', err);
       alert('שגיאה בסנכרון השדות.');
     } finally {
       setIsSchemaLoading(false);
@@ -717,8 +694,11 @@ const FormBuilder: React.FC<FormBuilderProps> = ({ user }) => {
     }
   };
 
+  const currentUser = authService.getCurrentUser();
+  const isAdmin = currentUser?.role === UserRole.ADMIN;
+
   const moveField = React.useCallback((index: number, direction: 'up' | 'down') => {
-    if (!canEditForm) return;
+    if (!isAdmin) return;
     setLocalFields(prev => {
       const newFields = [...prev];
       const targetIndex = direction === 'up' ? index - 1 : index + 1;
@@ -729,12 +709,14 @@ const FormBuilder: React.FC<FormBuilderProps> = ({ user }) => {
       return newFields.map((f, idx) => ({ ...f, orderIndex: idx + 1 }));
     });
     setHasChanges(true);
-  }, [canEditForm]);
+  }, [isAdmin]);
 
   const handleDeleteField = React.useCallback((e: React.MouseEvent, field: FormField) => {
     e.stopPropagation();
     setLocalFields(prev => prev.filter(item => item.id !== field.id));
-    setDeletedFieldIds(prev => [...prev, field.id]);
+    if (!field.id.startsWith('temp_')) {
+      setDeletedFieldIds(prev => [...prev, field.id]);
+    }
     setHasChanges(true);
   }, []);
 
@@ -866,7 +848,7 @@ const FormBuilder: React.FC<FormBuilderProps> = ({ user }) => {
 
   const previewContext = React.useMemo(() => ({
     ...dynamicTableData,
-    Customers: customers.map(c => ({ ...JSON.parse(c.notes || '{}'), id: c.id, customerNumber: c.customerNumber, name: c.name, address: c.address, city: c.city })),
+    Customers: customers.map(c => ({ ...JSON.parse(c.notes || '{}'), id: c.id, customer_number: c.customerNumber, name: c.name, address: c.address, city: c.city })),
     Users: users.map(u => ({ id: u.id, name: u.name, email: u.email, role: u.role }))
   }), [customers, users, dynamicTableData]);
 
@@ -925,7 +907,7 @@ const FormBuilder: React.FC<FormBuilderProps> = ({ user }) => {
               <button onClick={() => setSelectedTemplateId(t.id)} className={`w-full text-right p-4 rounded-2xl transition-all group ${selectedTemplateId === t.id ? 'bg-blue-600 text-white shadow-xl shadow-blue-200' : 'hover:bg-slate-50'}`} >
                 <div className="font-black text-sm">{t.name}</div> <div className={`text-[10px] font-bold ${selectedTemplateId === t.id ? 'text-blue-100' : 'text-slate-400'}`}>{t.formKey}</div>
               </button>
-              {canDeleteForm && (
+              {isAdmin && (
                 <button onClick={(e) => { e.stopPropagation(); setTemplateToDelete(t); }} className={`absolute top-2 left-2 p-2 rounded-lg opacity-0 group-hover/tmpl:opacity-100 transition-all ${selectedTemplateId === t.id ? 'bg-white/20 text-white hover:bg-white/40' : 'bg-red-50 text-red-600 hover:bg-red-100'}`} ><Trash2 size={14} /></button>
               )}
             </div>
@@ -955,7 +937,7 @@ const FormBuilder: React.FC<FormBuilderProps> = ({ user }) => {
               </div>
               <div className="flex flex-wrap gap-2 w-full md:w-auto">
                 <button onClick={() => handleMirrorSync()} className="flex-1 md:flex-none px-2 md:px-4 py-2 bg-emerald-50 text-emerald-700 border border-emerald-100 rounded-lg md:rounded-xl hover:bg-emerald-100 font-black text-[10px] md:text-xs transition-all min-h-[36px] md:min-h-[44px] flex items-center justify-center gap-1.5 md:gap-2"><ArrowRightLeft size={14} className="md:w-4 md:h-4" /> <span className="hidden sm:inline">Mirror Sync</span></button>
-                <button onClick={() => { const max = Math.max(...localFields.map(f => f.orderIndex || 0), -1); const n: any = { id: crypto.randomUUID(), fieldKey: `f_${localFields.length+1}`, label: 'שדה חדש', fieldType: FieldType.TEXT, orderIndex: max+1, isRequired: false, isVirtual: false }; setLocalFields([...localFields, n]); setHasChanges(true); setEditingField(n); }} className="flex-1 md:flex-none px-2 md:px-4 py-2 bg-blue-50 text-blue-700 border border-blue-100 rounded-lg md:rounded-xl font-black text-[10px] md:text-xs hover:bg-blue-100 min-h-[36px] md:min-h-[44px] flex items-center justify-center gap-1.5 md:gap-2"><Plus size={14} className="md:w-4 md:h-4" /> <span className="hidden sm:inline">הוספת שדה</span></button>
+                <button onClick={() => { const max = Math.max(...localFields.map(f => f.orderIndex || 0), -1); const n: any = { id: `temp_${Date.now()}`, fieldKey: `f_${localFields.length+1}`, label: 'שדה חדש', fieldType: FieldType.TEXT, orderIndex: max+1, isRequired: false, isVirtual: false }; setLocalFields([...localFields, n]); setHasChanges(true); setEditingField(n); }} className="flex-1 md:flex-none px-2 md:px-4 py-2 bg-blue-50 text-blue-700 border border-blue-100 rounded-lg md:rounded-xl font-black text-[10px] md:text-xs hover:bg-blue-100 min-h-[36px] md:min-h-[44px] flex items-center justify-center gap-1.5 md:gap-2"><Plus size={14} className="md:w-4 md:h-4" /> <span className="hidden sm:inline">הוספת שדה</span></button>
                 <button onClick={handleSaveForm} disabled={!hasChanges || saving} className={`flex-1 md:flex-none flex items-center justify-center gap-1.5 md:gap-2 px-4 md:px-6 py-2 rounded-lg md:rounded-xl font-black text-xs md:text-sm transition-all shadow-lg min-h-[36px] md:min-h-[44px] ${hasChanges ? 'bg-blue-600 text-white shadow-blue-200' : 'bg-slate-100 text-slate-400'}`}> {saving ? <Loader2 size={16} className="md:w-4 md:h-4 animate-spin" /> : <Save size={16} className="md:w-4 md:h-4" />} שמור </button>
               </div>
             </div>
@@ -1051,8 +1033,7 @@ const FormBuilder: React.FC<FormBuilderProps> = ({ user }) => {
                   key={field.id}
                   field={field}
                   idx={idx}
-                  canEdit={canEditForm}
-                  canDelete={canDeleteForm}
+                  isAdmin={isAdmin}
                   moveField={moveField}
                   setEditingField={setEditingField}
                   setEditTab={setEditTab}
@@ -1554,7 +1535,7 @@ const FormBuilder: React.FC<FormBuilderProps> = ({ user }) => {
                   )}
                 </div>
               )}
-              {editTab === 'preview' && ( <div className="max-w-4xl mx-auto border-4 border-dashed border-slate-100 rounded-[40px] p-12 bg-slate-50 shadow-inner relative"> <DynamicForm template={{...selectedTemplate!, fields: previewFields}} onCancel={() => {}} onSubmit={() => {}} contextData={previewContext} currentUser={user} draftId="preview_session" isPreview={true} /> </div> )}
+              {editTab === 'preview' && ( <div className="max-w-4xl mx-auto border-4 border-dashed border-slate-100 rounded-[40px] p-12 bg-slate-50 shadow-inner relative"> <DynamicForm template={{...selectedTemplate!, fields: previewFields}} onCancel={() => {}} onSubmit={() => {}} contextData={previewContext} currentUser={currentUser} draftId="preview_session" isPreview={true} /> </div> )}
             </div>
             <div className="p-4 md:p-8 border-t flex flex-col sm:flex-row justify-end gap-3 md:gap-4 bg-slate-50"> 
               <button onClick={() => setEditingField(null)} className="w-full sm:w-auto px-8 py-3 bg-white border rounded-2xl font-black text-slate-500 min-h-[44px]">ביטול</button> 

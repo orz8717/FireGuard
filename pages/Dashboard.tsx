@@ -101,8 +101,8 @@ const Dashboard: React.FC<DashboardProps> = ({ user }) => {
         {hasPermission('inspections', 'canView') && (
           <div className="lg:col-span-2 bg-white p-4 md:p-6 rounded-xl border shadow-sm overflow-hidden">
             <h3 className="text-base md:text-lg font-bold mb-6">פעילות ביקורות</h3>
-            <div className="h-64 sm:h-80 w-full">
-              <ResponsiveContainer width="100%" height="100%">
+            <div className="h-64 sm:h-80 w-full min-h-[300px]">
+              <ResponsiveContainer width="100%" height="100%" debounce={50}>
                 <BarChart data={chartData}>
                   <CartesianGrid strokeDasharray="3 3" vertical={false} />
                   <XAxis dataKey="name" fontSize={12} />

@@ -61,6 +61,38 @@ class AuthService {
     return user;
   }
 
+  async getUserProfile(userId: string): Promise<User | null> {
+    try {
+      const { data: userData, error: userError } = await supabase
+        .from('users')
+        .select('*')
+        .eq('id', userId)
+        .single();
+
+      if (userError || !userData || !userData.is_active) {
+        console.error('Failed to fetch user profile or user is inactive:', userError);
+        return null;
+      }
+
+      const user: User = {
+        id: userData.id,
+        name: userData.name,
+        email: userData.email,
+        phone: userData.phone,
+        role: userData.role,
+        isActive: userData.is_active,
+        createdAt: userData.created_at,
+        updatedAt: userData.updated_at
+      };
+
+      this.currentUser = user;
+      return user;
+    } catch (err) {
+      console.error('Error in getUserProfile:', err);
+      return null;
+    }
+  }
+
   async signUp(email: string, password: string, name: string, phone: string): Promise<{ user: any; error: any }> {
     try {
       // 0. Check if email already exists in public.users

@@ -322,6 +322,15 @@ END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 -- 4. פונקציות תשתית נוספות
+DROP FUNCTION IF EXISTS get_schema_metadata();
+CREATE OR REPLACE FUNCTION get_schema_metadata()
+RETURNS TABLE(table_name text, column_name text, data_type text) 
+LANGUAGE sql SECURITY DEFINER AS $$
+  SELECT table_name::text, column_name::text, data_type::text
+  FROM information_schema.columns
+  WHERE table_schema = 'public';
+$$;
+
 DROP FUNCTION IF EXISTS get_table_columns(TEXT);
 CREATE OR REPLACE FUNCTION get_table_columns(p_table_name TEXT)
 RETURNS TABLE(column_name TEXT, data_type TEXT, ordinal_position INT, is_updatable TEXT) AS $$

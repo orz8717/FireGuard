@@ -1,11 +1,13 @@
-import { supabase, supabaseAdmin, supabaseAnon } from './supabaseClient';
-import { User, Customer, Inspection, Certificate, FormTemplate, Permission, UserRole, InspectionStatus, InspectionType, FormField, FieldType, AuditLog } from '../types';
+import { supabase, getSupabaseAdmin, getSupabaseAnon } from '../src/lib/supabase';
+import { User, Customer, Inspection, Certificate, FormTemplate, Permission, UserRole, InspectionStatus, InspectionType, FormField, AuditLog } from '../types';
 import { localDb } from './localDb';
 import { syncEngine } from './syncEngine';
-import { schemaService } from './schemaService';
+import { SchemaService } from './schemaService';
+import { generateUUID, generateROWID, isUUID } from '../src/utils/idGenerators';
+import { waitUntilReady } from '../src/lib/connectionGuard';
 
 class DBService {
-  public supabaseAdmin = supabaseAdmin;
+  public get supabaseAdmin() { return getSupabaseAdmin(); }
   public localDb = localDb;
   public syncEngine = syncEngine;
 
@@ -25,6 +27,13 @@ class DBService {
       return this.dynamicSchemaCache || {};
     }
 
+    // Wait for connection
+    const ready = await waitUntilReady();
+    if (!ready) {
+        console.warn('[DBService] Connection not ready, skipping sync.');
+        return this.dynamicSchemaCache || {};
+    }
+
     this.isFetchingSchema = true;
     const startTime = performance.now();
     try {
@@ -41,9 +50,6 @@ class DBService {
       for (const tableName of tablesToSync) {
         try {
           const data = await this.getRawTableData(tableName);
-          
-          // Wait for dynamic schema hydration to complete
-          await localDb.waitForReady();
           
           // Try to access the table dynamically
           const table = localDb.table(tableName);
@@ -95,16 +101,11 @@ class DBService {
     }[] = [];
 
     try {
-      // 1. Get all tables and their columns
-      const { data: columns, error: colError } = await supabaseAdmin
-        .from('information_schema.columns')
-        .select('table_name, column_name, data_type')
-        .eq('table_schema', 'public');
-
-      if (colError) throw colError;
+      // 1. Get all tables and their columns via SchemaService (RPC)
+      const columns = await SchemaService.getRawMetadata();
 
       // 2. Get all triggers
-      const { data: triggers, error: trgError } = await supabaseAdmin.rpc('get_triggers');
+      const { data: triggers, error: trgError } = await getSupabaseAdmin().rpc('get_triggers');
       // If RPC doesn't exist, we'll try a fallback or just skip trigger check with a warning
       
       const tables = Array.from(new Set(columns.map(c => c.table_name)));
@@ -207,22 +208,11 @@ class DBService {
    * Helper to fetch all rows from a table, bypassing Supabase's 1000-row limit via pagination.
    */
   private async fetchFullTable(tableName: string, orderCol?: string, orderAsc: boolean = true, useAdmin: boolean = false) {
-    // Wait for dynamic schema hydration to complete
     await localDb.waitForReady();
-    
     // Try local first
     let localData: any[] = [];
     try {
-      let table = localDb.table(tableName);
-      
-      // If table doesn't exist locally, try to refresh schema once
-      if (!table) {
-        console.warn(`[DB] Table ${tableName} not found in local schema. Attempting schema refresh...`);
-        const schema = await schemaService.getSchema();
-        await localDb.hydrateDynamicSchema(schema);
-        table = localDb.table(tableName);
-      }
-
+      const table = localDb.table(tableName);
       if (table) {
         localData = await table.toArray();
       }
@@ -249,45 +239,73 @@ class DBService {
     }
 
     // Fallback to live fetch if no local data
-    return await this.getRawTableDataFromSupabase(tableName);
+    try {
+      return await this.getRawTableDataFromSupabase(tableName);
+    } catch (err) {
+      console.warn(`[DB] Fallback to local for ${tableName} due to fetch error`);
+      // Try to fetch from local again just in case
+      try {
+        const table = localDb.table(tableName);
+        const localData = table ? await table.toArray() : [];
+        console.warn(`[DB] Local fallback result for ${tableName}: ${localData.length} records`);
+        return localData;
+      } catch (e) {
+        return [];
+      }
+    }
   }
 
   private async getRawTableDataFromSupabase(tableName: string, orderCol?: string, orderAsc: boolean = true, useAdmin: boolean = false) {
     let allData: any[] = [];
     let from = 0;
-    const step = 200; // Reduced from 1000 to avoid statement timeouts (57014)
+    const step = 50; // Reduced to 50 to avoid timeouts
     let finished = false;
-    const client = useAdmin ? supabaseAdmin : supabase;
+    const client = useAdmin ? getSupabaseAdmin() : supabase;
+    const actualTableName = this.getActualTableName(tableName);
 
     while (!finished) {
-      let query = client.from(tableName).select('*').range(from, from + step - 1);
+      let query = client.from(actualTableName).select('*').range(from, from + step - 1);
       if (orderCol) {
         query = query.order(orderCol, { ascending: orderAsc });
       }
-      const { data, error } = await query;
-      if (error) {
-        console.error(`[DB] Error fetching ${tableName} at range ${from}-${from + step}:`, error);
-        throw error;
+      
+      let retries = 0;
+      let success = false;
+      while (!success && retries < 3) {
+        const { data, error } = await query;
+        if (error) {
+          if (error.code === '57014') { // Timeout
+            console.warn(`[DB] Timeout fetching ${tableName} at range ${from}-${from + step}, retrying...`);
+            await new Promise(resolve => setTimeout(resolve, 2000 * (retries + 1)));
+            retries++;
+            continue;
+          }
+          console.error(`[DB] Error fetching ${tableName} at range ${from}-${from + step}:`, error);
+          throw error;
+        }
+        
+        if (data && data.length > 0) {
+          allData = [...allData, ...data];
+          if (data.length < step) finished = true;
+          else from += step;
+        } else {
+          finished = true;
+        }
+        success = true;
       }
-      if (data && data.length > 0) {
-        allData = [...allData, ...data];
-        if (data.length < step) finished = true;
-        else from += step;
-      } else {
-        finished = true;
-      }
+      if (!success) throw new Error(`Failed to fetch ${tableName} after retries`);
     }
     return allData;
   }
 
   async testConnection(): Promise<{ success: boolean; message: string; code?: string }> {
     try {
-      const { error: pingError } = await supabaseAdmin.from('users').select('id').limit(1);
+      const { error: pingError } = await getSupabaseAdmin().from(this.getActualTableName('users')).select('id').limit(1);
       if (pingError) {
         if (pingError.message.includes('JWT')) return { success: false, message: 'מפתח API לא תקין', code: 'INVALID_KEY' };
         throw new Error(`שגיאת תקשורת בסיסית: ${pingError.message}`);
       }
-      const { error: rpcError } = await supabaseAdmin.rpc('check_table_exists', { p_table_name: 'users' });
+      const { error: rpcError } = await getSupabaseAdmin().rpc('check_table_exists', { p_table_name: 'users' });
       if (rpcError) return { success: false, message: 'יש להריץ את סקריפט ה-SQL ב-Supabase תחילה', code: 'SQL_NOT_RUN' };
       return { success: true, message: 'חיבור תקין' };
     } catch (err: any) {
@@ -297,20 +315,28 @@ class DBService {
 
   async getTablesList(): Promise<{ id: string; label: string }[]> {
     try {
-      const { data, error } = await supabaseAdmin.rpc('get_public_tables');
+      const { data, error } = await getSupabaseAdmin().rpc('get_public_tables');
       if (error) return [];
       return (data || []).map((t: { table_name: string }) => ({ id: t.table_name, label: t.table_name }));
     } catch { return []; }
   }
 
   async reloadSchemaCache(): Promise<void> {
-    try { await supabaseAdmin.rpc('reload_schema_cache'); } catch {}
+    try { await getSupabaseAdmin().rpc('reload_schema_cache'); } catch {}
   }
 
   async hydrateMetadata(userName: string) {
     console.log('[DB] Starting metadata hydration...');
     try {
-      // Fetch all core tables to populate local cache
+      // 1. Hydrate dynamic schema from Supabase first
+      const schemaMetadata = await SchemaService.getSchemaMetadata();
+      const schema: Record<string, string[]> = {};
+      for (const [table, columns] of Object.entries(schemaMetadata)) {
+        schema[table] = Array.from(columns);
+      }
+      await localDb.hydrateDynamicSchema(schema);
+
+      // 2. Fetch all core tables to populate local cache
       const coreTables = [
         'users',
         'customers',
@@ -335,13 +361,24 @@ class DBService {
     }
   }
 
+  /**
+   * Helper to get the actual table name in Supabase (handles mapping like Signature -> Signture)
+   */
+  public getActualTableName(tableName: string): string {
+    return SchemaService.getActualTableName(tableName);
+  }
+
   async getRawTableData(tableName: string): Promise<any[]> {
     try {
       return await this.fetchFullTable(tableName, 'created_at', false, true);
     } catch {
       // Fallback if created_at doesn't exist
       try {
-        return await this.fetchFullTable(tableName, undefined, true, true);
+        const actualTableName = this.getActualTableName(tableName);
+        let query = supabase.from(actualTableName).select('*');
+        const { data, error } = await query;
+        if (error) throw error;
+        return data || [];
       } catch {
         return [];
       }
@@ -350,7 +387,7 @@ class DBService {
 
   async getTableColumns(tableName: string): Promise<{ column_name: string; data_type: string; ordinal_position: number; is_updatable: string }[]> {
     try {
-      const { data, error } = await supabaseAdmin.rpc('get_table_columns', { p_table_name: tableName });
+      const { data, error } = await getSupabaseAdmin().rpc('get_table_columns', { p_table_name: tableName });
       if (error) {
         console.error(`[DB] Error getting columns for ${tableName}:`, error);
         return [];
@@ -404,18 +441,16 @@ class DBService {
 
   async tableExists(tableName: string): Promise<boolean> {
     try {
-      const { data, error } = await supabaseAdmin.rpc('check_table_exists', { p_table_name: tableName });
+      const { data, error } = await getSupabaseAdmin().rpc('check_table_exists', { p_table_name: tableName });
       return error ? false : !!data;
     } catch { return false; }
   }
 
   async saveToTable(tableName: string, payload: any, useAdmin: boolean = false, skipSyncQueue: boolean = false) {
-    const oldId = payload.id;
-    const isTempId = !oldId;
-    
+    await localDb.waitForReady();
     // Ensure ID exists (Client-Side UUID)
-    if (isTempId) {
-      payload.id = crypto.randomUUID();
+    if (!payload.id) {
+      payload.id = generateUUID();
     }
     
     // Add timestamps
@@ -424,21 +459,9 @@ class DBService {
     payload.updated_at = now;
 
     try {
-      // Wait for dynamic schema hydration to complete
-      await localDb.waitForReady();
-      
       // Save to local DB first
       try {
-        let table = localDb.table(tableName);
-        
-        // If table doesn't exist locally, try to refresh schema once
-        if (!table) {
-          console.warn(`[DB] Table ${tableName} not found in local schema. Attempting schema refresh...`);
-          const schema = await schemaService.getSchema();
-          await localDb.hydrateDynamicSchema(schema);
-          table = localDb.table(tableName);
-        }
-
+        const table = localDb.table(tableName);
         if (table) {
           await table.put(payload);
         }
@@ -463,12 +486,9 @@ class DBService {
       }
     } else {
       // If skipping queue, it means it's being synced to Supabase directly
-      const client = useAdmin ? supabaseAdmin : supabase;
-      
-      // Apply Sanitization Layer (Source of Truth: Supabase Schema)
-      const sanitizedPayload = await schemaService.sanitizePayload(tableName, payload);
-      
-      const { error } = await client.from(tableName).upsert(sanitizedPayload);
+      const client = useAdmin ? getSupabaseAdmin() : supabase;
+      const actualTableName = this.getActualTableName(tableName);
+      const { error } = await client.from(actualTableName).upsert(payload);
       if (error) throw error;
     }
 
@@ -476,10 +496,11 @@ class DBService {
   }
 
   async saveAuditData(tableName: string, parentData: any, childData: any[]) {
+    await localDb.waitForReady();
     try {
       // --- PARENT LOGIC ---
       if (!parentData.id) {
-        parentData.id = crypto.randomUUID();
+        parentData.id = generateUUID();
       }
       
       const now = new Date().toISOString();
@@ -508,7 +529,7 @@ class DBService {
         for (const child of childData) {
           // Ensure each item has a unique UUID
           if (!child.id) {
-            child.id = crypto.randomUUID();
+            child.id = generateUUID();
           }
           
           // Explicitly set parent_id to the inspection's UUID
@@ -521,7 +542,7 @@ class DBService {
           try {
             await localDb.table(tableName).put(child);
           } catch (e) {
-            console.error(`[DB] Failed to save child to local table ${tableName}:`, e);
+            console.error(`[DB] Failed to save child to ${tableName}:`, e);
           }
           console.log(`[Dexie Save] Table: ${tableName} | ID: ${child.id}`);
           
@@ -544,21 +565,10 @@ class DBService {
   }
 
   async deleteRecord(tableName: string, id: string | number, useAdmin: boolean = false, skipSyncQueue: boolean = false) {
-    // Wait for dynamic schema hydration to complete
     await localDb.waitForReady();
-    
     // Delete from local DB first
     try {
-      let table = localDb.table(tableName);
-      
-      // If table doesn't exist locally, try to refresh schema once
-      if (!table) {
-        console.warn(`[DB] Table ${tableName} not found in local schema. Attempting schema refresh...`);
-        const schema = await schemaService.getSchema();
-        await localDb.hydrateDynamicSchema(schema);
-        table = localDb.table(tableName);
-      }
-
+      const table = localDb.table(tableName);
       if (table) {
         await table.delete(id.toString());
       }
@@ -576,8 +586,9 @@ class DBService {
         this.syncEngine.processQueue();
       }
     } else {
-      const client = useAdmin ? supabaseAdmin : supabase;
-      const { error } = await client.from(tableName).delete().eq('id', id);
+      const client = useAdmin ? getSupabaseAdmin() : supabase;
+      const actualTableName = this.getActualTableName(tableName);
+      const { error } = await client.from(actualTableName).delete().eq('id', id);
       if (error) throw error;
     }
   }
@@ -605,8 +616,7 @@ class DBService {
     delete payload.password; 
     
     try {
-      const { data, error } = await supabaseAdmin
-        .from('users')
+      const { data, error } = await getSupabaseAdmin()        .from('users')
         .update({ ...payload, updated_at: new Date().toISOString() })
         .eq('id', id)
         .select();
@@ -632,7 +642,7 @@ class DBService {
 
     // 1. Check if user already exists
     try {
-      const { data: listData } = await supabaseAdmin.auth.admin.listUsers();
+      const { data: listData } = await getSupabaseAdmin().auth.admin.listUsers();
       const found = (listData?.users as any[])?.find(u => u.email === user.email);
       if (found) {
         console.log('User already exists in Auth:', found.id);
@@ -648,7 +658,7 @@ class DBService {
     if (!authUserId) {
       console.log('Using shared non-persisting client for registration...');
       
-      const { data: authData, error: authError } = await supabaseAnon.auth.signUp({
+      const { data: authData, error: authError } = await getSupabaseAnon().auth.signUp({
         email: user.email,
         password: user.password
       });
@@ -657,7 +667,7 @@ class DBService {
         console.error('SignUp failed:', authError.message);
         
         // Check if it was created despite error
-        const { data: listData } = await supabaseAdmin.auth.admin.listUsers();
+        const { data: listData } = await getSupabaseAdmin().auth.admin.listUsers();
         const found = (listData?.users as any[])?.find(u => u.email === user.email);
         
         if (found) {
@@ -686,7 +696,7 @@ class DBService {
     };
     
     console.log('Upserting profile for:', authUserId);
-    const { data, error } = await supabaseAdmin.from('users').upsert(payload).select().single();
+    const { data, error } = await getSupabaseAdmin().from(this.getActualTableName('users')).upsert(payload).select().single();
     
     if (error) {
       console.error('Profile upsert failed:', error);
@@ -697,7 +707,7 @@ class DBService {
     // Since signUp leaves the user unconfirmed by default, we fix it here.
     try {
        console.log('Auto-confirming email...');
-       await supabaseAdmin.auth.admin.updateUserById(authUserId, { email_confirm: true });
+       await getSupabaseAdmin().auth.admin.updateUserById(authUserId, { email_confirm: true });
     } catch (e) {
        console.warn('Could not auto-confirm email:', e);
     }
@@ -707,12 +717,18 @@ class DBService {
 
   async syncPermissions(userId: string): Promise<void> {
     if (!navigator.onLine) return;
+    await localDb.waitForReady();
     try {
       console.log(`[Sync] Fetching permissions for user ${userId} from Supabase...`);
-      const { data, error } = await supabase.from('permissions').select('*').eq('user_id', userId);
+      const { data, error } = await supabase.from(this.getActualTableName('permissions')).select('*').eq('user_id', userId);
       if (error) throw error;
       
       if (data && data.length > 0) {
+        if (!localDb.tables.some(t => t.name === 'permissions')) {
+          console.warn('[Sync] permissions table not found in localDb, skipping local save');
+          return;
+        }
+
         // Clear existing local permissions for this user
         const existing = await localDb.permissions.where('user_id').equals(userId).toArray();
         for (const p of existing) {
@@ -728,7 +744,12 @@ class DBService {
   }
 
   async checkPermissionLocally(userId: string, screenKey: string, action: string = 'can_view'): Promise<boolean> {
+    await localDb.waitForReady();
     try {
+      if (!localDb.tables.some(t => t.name === 'permissions')) {
+        console.warn('[Auth Guard] permissions table not found in localDb');
+        return false;
+      }
       const permissions = await localDb.permissions.where('user_id').equals(userId).toArray();
       const perm = permissions.find(p => p.screen_key === screenKey);
       if (!perm) return false;
@@ -764,7 +785,7 @@ class DBService {
     }
 
     const payload = permissions.map(p => ({
-      id: crypto.randomUUID(),
+      id: generateUUID(),
       user_id: userId,
       screen_key: p.screenKey,
       can_view: p.canView,
@@ -845,7 +866,7 @@ class DBService {
       let nObj: any = {}; try { nObj = JSON.parse(c.notes || '{}'); } catch {}
       if (!nObj['ROW ID']) nObj['ROW ID'] = await this.generateRowId();
       return {
-        id: crypto.randomUUID(),
+        id: generateUUID(),
         customer_number: String(c.customerNumber || ''),
         name: c.name,
         address: c.address,
@@ -881,7 +902,7 @@ class DBService {
     }));
   }
 
-  async addInspection(inspection: Partial<Inspection>, tableName: string = 'inspections', childData?: Record<string, any[]>) {
+  async addInspection(inspection: Partial<Inspection>, tableName: string = 'inspections', childData?: any[] | Record<string, any[]>) {
     console.log(`[DB] Initiating addInspection. Target Table: ${tableName}`);
     if (tableName && tableName !== 'inspections') {
       const columns = await this.getTableColumns(tableName);
@@ -939,7 +960,7 @@ class DBService {
     return await this.saveToTable(tableName, payload, true);
   }
 
-  async updateInspection(id: string, inspection: Partial<Inspection>, tableName: string = 'inspections', childData?: Record<string, any[]>) {
+  async updateInspection(id: string, inspection: Partial<Inspection>, tableName: string = 'inspections', childData?: any[] | Record<string, any[]>) {
     console.log(`[DB] Initiating updateInspection. Target Table: ${tableName}, ID: ${id}`);
     if (tableName && tableName !== 'inspections') {
       const columns = await this.getTableColumns(tableName);
@@ -1026,7 +1047,7 @@ class DBService {
       }
 
       authId = user.id;
-      const { data: userData, error: userError } = await supabaseAdmin.from('users').select('id, role').eq('id', user.id).single();
+      const { data: userData, error: userError } = await getSupabaseAdmin().from(this.getActualTableName('users')).select('id, role').eq('id', user.id).single();
       
       if (userError || !userData) {
         console.error('Profile fetch error:', userError);
@@ -1058,7 +1079,7 @@ class DBService {
         payload.id = bot.id;
       }
 
-      // Use supabaseAdmin to bypass RLS session issues in iframe, 
+      // Use getSupabaseAdmin() to bypass RLS session issues in iframe, 
       // since we've already verified the user's role manually above.
       return await this.saveToTable('automation_bots', payload, true);
     } catch (error: any) {
@@ -1095,7 +1116,7 @@ class DBService {
       }
 
       authId = user.id;
-      const { data: userData, error: userError } = await supabaseAdmin.from('users').select('id, role').eq('id', user.id).single();
+      const { data: userData, error: userError } = await getSupabaseAdmin().from(this.getActualTableName('users')).select('id, role').eq('id', user.id).single();
       
       if (userError || !userData) {
         console.error('Profile fetch error:', userError);
@@ -1119,7 +1140,8 @@ class DBService {
     const prefix = type === InspectionType.ANNUAL ? 'AN' : (type === InspectionType.SEMI_ANNUAL ? 'SA' : 'OT');
     const year = new Date().getFullYear();
     
-    let query = supabase.from(tableName).select('*', { count: 'exact', head: true });
+    const actualTableName = this.getActualTableName(tableName);
+    let query = supabase.from(actualTableName).select('*', { count: 'exact', head: true });
     if (tableName === 'inspections') {
       query = query.eq('type', type);
     }
@@ -1178,7 +1200,7 @@ class DBService {
 
   async createFormTemplate(template: { name: string; formKey: string; description: string; tableName?: string }) {
     const payload = {
-      id: crypto.randomUUID(),
+      id: generateUUID(),
       name: template.name,
       form_key: template.formKey,
       description: template.description,
@@ -1211,12 +1233,13 @@ class DBService {
   async saveFormFields(templateId: string, fields: FormField[], deletedIds: string[]) {
     try {
       if (deletedIds.length > 0) {
-        for (const id of deletedIds) {
+        const actualDeletedIds = deletedIds.filter(id => !id.startsWith('temp_'));
+        for (const id of actualDeletedIds) {
           await this.deleteRecord('form_fields', id);
         }
       }
       const upsertPayload = fields.map(f => ({
-        id: f.id,
+        id: f.id.startsWith('temp_') ? generateUUID() : f.id,
         template_id: templateId,
         field_key: f.fieldKey,
         label: f.label,
@@ -1262,7 +1285,7 @@ class DBService {
   }
 
   async createDynamicTable(tableName: string, columns: any[], overwrite: boolean = false): Promise<void> {
-    const { error } = await supabaseAdmin.rpc('create_dynamic_table', {
+    const { error } = await getSupabaseAdmin().rpc('create_dynamic_table', {
       p_table_name: tableName,
       p_columns: columns,
       p_overwrite: overwrite
@@ -1271,7 +1294,7 @@ class DBService {
   }
 
   async addColumnToTable(tableName: string, columnName: string, columnType: string): Promise<void> {
-    const { error } = await supabaseAdmin.rpc('add_column_to_table', {
+    const { error } = await getSupabaseAdmin().rpc('add_column_to_table', {
       p_table_name: tableName,
       p_column_name: columnName,
       p_column_type: columnType
@@ -1280,7 +1303,7 @@ class DBService {
   }
 
   async syncTableColumns(tableName: string, columns: string[]): Promise<void> {
-    const { error } = await supabaseAdmin.rpc('sync_table_columns', {
+    const { error } = await getSupabaseAdmin().rpc('sync_table_columns', {
       target_table: tableName,
       columns_to_add: columns.map(c => c.trim().toLowerCase().replace(/[^a-z0-9א-ת_]/g, '_'))
     });
@@ -1391,8 +1414,7 @@ class DBService {
                   }
                   
                   // We use a separate check for the field
-                  const { error: cellError } = await supabaseAdmin
-                    .from(tableName)
+                  const { error: cellError } = await getSupabaseAdmin()                    .from(tableName)
                     .insert([testObj]);
                   
                   // If it's an upsert and it failed because of duplicate key, that's fine for a cell test
@@ -1436,8 +1458,7 @@ class DBService {
     if (upsertKey) {
       const keys = batch.map(r => r[upsertKey]).filter(Boolean);
       if (keys.length > 0) {
-        const { data: existingRecords, error: fetchError } = await supabaseAdmin
-          .from(tableName)
+        const { data: existingRecords, error: fetchError } = await getSupabaseAdmin()          .from(tableName)
           .select('*')
           .in(upsertKey, keys);
 
@@ -1463,15 +1484,14 @@ class DBService {
           }
 
           for (const record of toUpdate) {
-            const { error: updateError } = await supabaseAdmin
-              .from(tableName)
+            const { error: updateError } = await getSupabaseAdmin()              .from(tableName)
               .update(record)
               .eq(upsertKey, record[upsertKey]);
             if (updateError) throw updateError;
           }
 
           if (toInsert.length > 0) {
-            const { error: insertError } = await supabaseAdmin.from(tableName).insert(toInsert);
+            const { error: insertError } = await getSupabaseAdmin().from(this.getActualTableName(tableName)).insert(toInsert);
             if (insertError) throw insertError;
           }
           return;
@@ -1479,12 +1499,12 @@ class DBService {
       }
     }
     
-    const { error: insertError } = await supabaseAdmin.from(tableName).insert(batch);
+    const { error: insertError } = await getSupabaseAdmin().from(this.getActualTableName(tableName)).insert(batch);
     if (insertError) throw insertError;
   }
 
   async logImport(tableName: string, rowCount: number, userId: string, status: string = 'SUCCESS'): Promise<void> {
-    await supabaseAdmin.from('import_logs').insert([{ table_name: tableName, row_count: rowCount, status, user_id: userId }]);
+    await getSupabaseAdmin().from(this.getActualTableName('import_logs')).insert([{ table_name: tableName, row_count: rowCount, status, user_id: userId }]);
   }
 
   async logActivity(
@@ -1496,7 +1516,7 @@ class DBService {
     executionTime?: number
   ): Promise<void> {
     // Fire and forget (asynchronous) to avoid performance lag
-    supabaseAdmin.from('audit_logs').insert([{
+    getSupabaseAdmin().from(this.getActualTableName('audit_logs')).insert([{
       user_name: userName,
       action_type: actionType,
       description: description,
@@ -1578,8 +1598,7 @@ class DBService {
     
     try {
       // 1. Fetch active bots for this table
-      const { data: bots, error: botsError } = await supabaseAdmin
-        .from('automation_bots')
+      const { data: bots, error: botsError } = await getSupabaseAdmin()        .from('automation_bots')
         .select('*')
         .eq('table_name', tableName)
         .eq('is_active', true);
@@ -1603,16 +1622,14 @@ class DBService {
 
       // 3. Fetch the main record data
       let finalRowData = null;
-      const { data: rowData, error: fetchError } = await supabaseAdmin
-        .from(tableName)
+      const { data: rowData, error: fetchError } = await getSupabaseAdmin()        .from(tableName)
         .select('*')
         .eq('ROWID', recordId)
         .maybeSingle();
 
       if (fetchError || !rowData) {
         // Try fetching by UUID if ROWID fails
-        const { data: uuidData } = await supabaseAdmin
-          .from(tableName)
+        const { data: uuidData } = await getSupabaseAdmin()          .from(tableName)
           .select('*')
           .eq('id', recordId)
           .maybeSingle();
@@ -1733,8 +1750,7 @@ class DBService {
           const orFilter = (validSearchFields.length > 0 ? validSearchFields : ['id'])
             .map(field => `${field}.eq."${parentId}"`).join(',');
           
-          const { data, error } = await supabaseAdmin
-            .from(tableName)
+          const { data, error } = await getSupabaseAdmin()            .from(tableName)
             .select(validSearchFields.length > 0 ? validSearchFields[0] : '*')
             .or(orFilter)
             .maybeSingle();
@@ -1787,55 +1803,61 @@ class DBService {
     }));
   }
 
-  async getInspectionDrafts(userId: string) {
+  async getInspectionDrafts(userId: string): Promise<any[]> {
     return await this.getTableData('inspection_drafts', { user_id: userId });
   }
 
   async saveInspectionDraft(draft: any) {
-    const cleanDraft = { ...draft };
-    await this.saveToTable('inspection_drafts', cleanDraft);
+    let existing;
+    
+    if (draft.id) {
+      const allDrafts = await this.getTableData('inspection_drafts', { user_id: draft.user_id });
+      existing = allDrafts.filter((d: any) => d.data?.id === draft.id || d.data?.ROWID === draft.id || d.id === draft.id);
+    }
+    
+    if (!existing || existing.length === 0) {
+      existing = await this.getTableData('inspection_drafts', { 
+        user_id: draft.user_id, 
+        table_name: draft.table_name 
+      });
+    }
+    
+    if (existing && existing.length > 0) {
+      return await this.saveToTable('inspection_drafts', { ...draft, id: existing[0].id });
+    } else {
+      return await this.saveToTable('inspection_drafts', draft);
+    }
   }
 
   async deleteInspectionDraft(id: string) {
-    if (!id) {
-      console.log(`[DB] Skipping delete for empty ID`);
-      return;
-    }
-    await this.deleteRecord('inspection_drafts', id);
+    return await this.deleteRecord('inspection_drafts', id);
   }
 
   async getTableData(tableName: string, filters?: { [key: string]: any }): Promise<any[]> {
+    await localDb.waitForReady();
     try {
-      // Wait for dynamic schema hydration to complete
-      await localDb.waitForReady();
-      
       let localData: any[] = [];
       
       // 1. Try fetching from localDb first
       try {
         const table = localDb.table(tableName);
-        if (table) {
-          if (filters && Object.keys(filters).length > 0) {
-            // Apply simple equality filters (e.g., parent_id)
-            const keys = Object.keys(filters);
-            if (keys.length === 1) {
-              const key = keys[0];
-              localData = await table.where(key).equals(filters[key]).toArray();
-            } else {
-              // Fallback to JS filtering for multiple conditions
-              localData = await table.filter(item => {
-                return Object.entries(filters).every(([k, v]) => item[k] === v);
-              }).toArray();
-            }
+        if (filters && Object.keys(filters).length > 0) {
+          // Apply simple equality filters (e.g., parent_id)
+          const keys = Object.keys(filters);
+          if (keys.length === 1) {
+            const key = keys[0];
+            localData = await table.where(key).equals(filters[key]).toArray();
           } else {
-            localData = await table.toArray();
+            // Fallback to JS filtering for multiple conditions
+            localData = await table.filter(item => {
+              return Object.entries(filters).every(([k, v]) => item[k] === v);
+            }).toArray();
           }
         } else {
-          console.warn(`[DBService] Table ${tableName} not found in local schema.`);
-          return [];
+          localData = await table.toArray();
         }
       } catch (e) {
-        console.error(`[DBService] Error reading table ${tableName}:`, e);
+        console.error(`[DB] Failed to fetch local data for ${tableName}:`, e);
         return [];
       }
 
@@ -1847,6 +1869,12 @@ class DBService {
 
       // 3. If empty and online, fetch from Supabase and seed Dexie
       if (navigator.onLine) {
+        // Defer Smart Fallback: Wait for connection_ready or 2s delay
+        await Promise.race([
+            waitUntilReady(),
+            new Promise(resolve => setTimeout(resolve, 2000))
+        ]);
+
         console.log(`[Smart Fallback] Local DB empty for ${tableName}. Fetching from Supabase...`);
         let query = supabase.from(tableName).select('*');
         if (filters) {
@@ -1864,12 +1892,9 @@ class DBService {
         if (data && data.length > 0) {
           // Seed Dexie for future offline use
           try {
-            const table = localDb.table(tableName);
-            if (table) {
-              await table.bulkPut(data);
-            }
+            await localDb.table(tableName).bulkPut(data);
           } catch (e) {
-            console.error(`[Dexie Seed] Failed to seed ${tableName}:`, e);
+            console.error(`[DB] Failed to seed Dexie for ${tableName}:`, e);
           }
           console.log(`[Dexie Seed] Saved ${data.length} records to ${tableName} for offline use.`);
           return data;
@@ -1903,6 +1928,24 @@ class DBService {
       console.log(`[DB] Skipping fetch for empty ID`);
       return null;
     }
+
+    // Validation: Ensure it's a UUID if we are querying by 'id'
+    if (!isUUID(rowId)) {
+      console.warn(`[DB] Invalid UUID format for 'id' query: ${rowId}. Attempting to query by 'ROWID' instead.`);
+      
+      // If it's not a UUID, it might be a ROWID. Try to find it by ROWID column.
+      const { data: rowIdData, error: rowIdError } = await supabase
+        .from(tableName)
+        .select('*')
+        .eq('ROWID', rowId)
+        .maybeSingle();
+        
+      if (!rowIdError && rowIdData) return rowIdData;
+      
+      console.error(`[DB] Could not find record with ROWID: ${rowId}`);
+      return null;
+    }
+
     const { data, error } = await supabase
       .from(tableName)
       .select('*')

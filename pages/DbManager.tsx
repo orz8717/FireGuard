@@ -138,6 +138,14 @@ CREATE TRIGGER on_auth_user_created
   FOR EACH ROW EXECUTE PROCEDURE public.handle_new_user();
 
 -- 4. פונקציות עזר לאבחון וניהול סכמה (חובה עבור Diagnostics)
+CREATE OR REPLACE FUNCTION get_schema_metadata()
+RETURNS TABLE(table_name text, column_name text, data_type text) 
+LANGUAGE sql SECURITY DEFINER AS $$
+  SELECT table_name::text, column_name::text, data_type::text
+  FROM information_schema.columns
+  WHERE table_schema = 'public';
+$$;
+
 CREATE OR REPLACE FUNCTION get_triggers()
 RETURNS TABLE(table_name text, trigger_name text) 
 LANGUAGE sql SECURITY DEFINER AS $$

@@ -74,7 +74,7 @@ const Diagnostics: React.FC = () => {
       // 1. Formula Audit
       const formulaErrors: { template: string, field: string, error: string }[] = [];
       let fieldCount = 0;
-      const SYSTEM_VOID_FUNCTIONS = ['UNIQUEID', 'USEREMAIL', 'USERNAME', 'TODAY', 'NOW', 'CONTEXT'];
+      const SYSTEM_VOID_FUNCTIONS = ['UNIQUEID', 'UNIQUEID_V4', 'USEREMAIL', 'USERNAME', 'USERROLE', 'TODAY', 'NOW', 'TIMENOW', 'CONTEXT'];
 
       templates.forEach(t => {
         t.fields.forEach(f => {
@@ -103,23 +103,32 @@ const Diagnostics: React.FC = () => {
       });
 
       // 2. Recursive Logic Verification (Test nestChildRecords)
+      const testUuid = crypto.randomUUID();
+      const childUuid = crypto.randomUUID();
       const sampleData: Record<string, any[]> = {
         'כיבויים_שנתי': [
-          { ROWID: 'CHILD_1', parent_id: 'PARENT_1', name: 'מטף אבקה' }
+          { id: childUuid, parent_id: testUuid, name: 'מטף אבקה' }
         ],
         'כיבויים_שנתי_2': [
-          { ROWID: 'GRANDCHILD_1', parent_id: 'CHILD_1', test_result: 'תקין' }
+          { id: crypto.randomUUID(), parent_id: childUuid, test_result: 'תקין' }
         ]
       };
       
       let logicTestResult: { ok: boolean; payload?: any; error?: string } = { ok: false, error: '' };
       try {
-        const nested = nestChildRecords(sampleData, 'PARENT_1');
-        const child = nested['כיבויים_שנתי']?.records?.[0];
-        const grandchild = child?.temp_child_data?.['כיבויים_שנתי_2']?.records?.[0];
+        const nestedArray = nestChildRecords(sampleData, testUuid);
+        const nestedMap = nestedArray.reduce((acc: any, curr: any) => {
+          acc[curr.table] = curr;
+          return acc;
+        }, {});
+
+        const child = nestedMap['כיבויים_שנתי']?.records?.[0];
+        const grandchild = Array.isArray(child?.temp_child_data) 
+          ? child.temp_child_data.find((g: any) => g.table === 'כיבויים_שנתי_2')?.records?.[0]
+          : null;
         
         if (grandchild && grandchild.test_result === 'תקין') {
-          logicTestResult = { ok: true, payload: nested };
+          logicTestResult = { ok: true, payload: nestedArray };
         } else {
           logicTestResult = { ok: false, error: 'Grandchild nesting failed' };
         }

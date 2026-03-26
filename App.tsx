@@ -9,25 +9,17 @@ import { PermissionProvider, usePermissions } from './src/context/PermissionCont
 import { SyncProvider, useSync } from './src/context/SyncContext';
 import { dbService } from './services/dbService';
 import { pullService } from './services/pullService';
+import { syncEngine } from './services/syncEngine';
 import { AlertCircle, Wifi, WifiOff, RefreshCw, CloudSync } from 'lucide-react';
 import { APP_SCREENS } from './src/constants/screens';
+import { useBotRealtime } from './hooks/useBotRealtime';
 
 const AppContent: React.FC<{ user: User | null, setUser: (u: User | null) => void }> = ({ user, setUser }) => {
+  useBotRealtime();
   const [activeScreen, setActiveScreen] = React.useState('dashboard');
   const [showRegister, setShowRegister] = React.useState(false);
   const [permissionError, setPermissionError] = React.useState<string | null>(null);
   const { hasPermission, loading, refreshPermissions } = usePermissions();
-
-  // Hydrate metadata and sync permissions on login
-  React.useEffect(() => {
-    if (user) {
-      dbService.hydrateMetadata(user.name);
-      dbService.syncPermissions(user.id).then(() => {
-        refreshPermissions(true);
-      });
-      pullService.startPeriodicSync();
-    }
-  }, [user?.id]);
 
   // Check permissions on every screen change to ensure real-time enforcement
   React.useEffect(() => {
@@ -162,11 +154,36 @@ const AppContent: React.FC<{ user: User | null, setUser: (u: User | null) => voi
 const App: React.FC = () => {
   const [user, setUser] = React.useState<User | null>(authService.getCurrentUser());
 
-  // Listen for auth changes to update UI when session expires or refresh fails
+  // Listen for auth changes to update UI and manage sync services
   React.useEffect(() => {
+    let isSyncInitialized = false;
+
     const { data: { subscription } } = authService.onAuthStateChange((event, session) => {
+      console.log(`[Auth] State change: ${event}`);
+      
       if (event === 'SIGNED_OUT' || (event === 'TOKEN_REFRESHED' && !session)) {
         setUser(null);
+        isSyncInitialized = false;
+        syncEngine.stop();
+        pullService.stopPeriodicSync();
+      } else if ((event === 'SIGNED_IN' || event === 'INITIAL_SESSION') && session) {
+        if (isSyncInitialized) return;
+        isSyncInitialized = true;
+        
+        console.log('[Auth] Initializing sync services...');
+        
+        // Start everything here and ONLY here
+        syncEngine.start();
+        pullService.startPeriodicSync();
+        
+        // Fetch user profile and start hydration
+        authService.getUserProfile(session.user.id).then(u => {
+          if (u) {
+            setUser(u);
+            dbService.hydrateMetadata(u.name);
+            dbService.syncPermissions(u.id);
+          }
+        });
       }
     });
 
