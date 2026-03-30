@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { User, UserRole } from '../types';
 import { dbService } from '../services/dbService';
-import { supabase, getSupabaseAdmin } from '../src/lib/supabase';
+import { supabase, supabaseAdmin } from '../services/supabaseClient';
 import { 
   Zap, Plus, Settings2, History, Play, CheckCircle2, XCircle, 
   Clock, Database, Activity, X, Save, Trash2, GitBranch, 
@@ -77,6 +77,31 @@ const GAS_WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbx9Aprjm7RISvTe
 
 import { usePermissions } from '../src/context/PermissionContext';
 
+const ensureArray = (data: any): any[] => {
+  if (!data) return [];
+  if (Array.isArray(data)) return data;
+  if (typeof data === 'string') {
+    try {
+      const parsed = JSON.parse(data);
+      return ensureArray(parsed);
+    } catch (e) {
+      return [];
+    }
+  }
+  if (typeof data === 'object') {
+    // Handle object with numeric keys (e.g., {"0": {...}, "1": {...}})
+    return Object.keys(data)
+      .sort((a, b) => {
+        const numA = Number(a);
+        const numB = Number(b);
+        if (isNaN(numA) || isNaN(numB)) return a.localeCompare(b);
+        return numA - numB;
+      })
+      .map(key => data[key]);
+  }
+  return [];
+};
+
 const TriggersPage: React.FC<TriggersPageProps> = ({ user }) => {
   const { hasPermission } = usePermissions();
   const canView = hasPermission('triggers', 'canView');
@@ -130,9 +155,8 @@ const TriggersPage: React.FC<TriggersPageProps> = ({ user }) => {
       const columnNames = columns.map(c => c.column_name);
 
       const linkedTablesData = [];
-      const currentLinkedTables = Array.isArray(editingBot.linked_child_tables) ? editingBot.linked_child_tables : (editingBot.linked_child_tables ? [editingBot.linked_child_tables] : []);
-      if (currentLinkedTables.length > 0) {
-        for (const tableName of currentLinkedTables) {
+      if (ensureArray(editingBot.linked_child_tables).length > 0) {
+        for (const tableName of ensureArray(editingBot.linked_child_tables)) {
           const cols = await dbService.getTableColumns(tableName);
           linkedTablesData.push({
             tableName,
@@ -191,8 +215,7 @@ const TriggersPage: React.FC<TriggersPageProps> = ({ user }) => {
 
       setSimulationLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] Record fetched successfully.`]);
 
-      const stepsToRun = Array.isArray(editingBot.steps) ? editingBot.steps : (editingBot.steps ? [editingBot.steps] : []);
-      for (const step of stepsToRun) {
+      for (const step of ensureArray(editingBot.steps)) {
         if (step.type === 'RUN_TASK' && step.task) {
           setSimulationLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] Executing Step: ${step.name} (${step.task?.type})...`]);
           
@@ -205,11 +228,10 @@ const TriggersPage: React.FC<TriggersPageProps> = ({ user }) => {
             }
 
             const childData: Record<string, any[]> = {};
-            const currentLinkedTables = Array.isArray(editingBot.linked_child_tables) ? editingBot.linked_child_tables : (editingBot.linked_child_tables ? [editingBot.linked_child_tables] : []);
-            if (currentLinkedTables.length > 0) {
+            if (ensureArray(editingBot.linked_child_tables).length > 0) {
               const parentId = rowData.id || rowData.ROWID || rowData.inspectionSerialNumber;
               
-              for (const tableName of currentLinkedTables) {
+              for (const tableName of ensureArray(editingBot.linked_child_tables)) {
                 setSimulationLogs(prev => [...prev, `[${new Date().toLocaleTimeString()}] Fetching child records from ${tableName} using Parent ID: ${parentId}...`]);
                 
                 // Try to match by parent_id (UUID) or ROWID
@@ -387,8 +409,8 @@ const TriggersPage: React.FC<TriggersPageProps> = ({ user }) => {
         isActive: d.is_active,
         lastExecuted: null,
         event: d.action_config?.event || { type: d.event_type, targetTable: d.table_name, conditionFormula: d.condition_formula, bypassSecurity: false },
-        steps: Array.isArray(d.action_config?.steps) ? d.action_config.steps : (d.action_config?.steps ? [d.action_config.steps] : []),
-        linked_child_tables: Array.isArray(d.action_config?.linked_child_tables) ? d.action_config.linked_child_tables : (d.action_config?.linked_child_tables ? [d.action_config.linked_child_tables] : []),
+        steps: ensureArray(d.action_config?.steps),
+        linked_child_tables: ensureArray(d.action_config?.linked_child_tables),
         templateId: d.template_id
       }));
       setBots(mappedBots);
@@ -432,8 +454,7 @@ const TriggersPage: React.FC<TriggersPageProps> = ({ user }) => {
     }
 
     // Validation: Check if Google Doc Template ID is missing for Email tasks
-    const currentSteps = Array.isArray(editingBot.steps) ? editingBot.steps : (editingBot.steps ? [editingBot.steps] : []);
-    const emailSteps = currentSteps.filter(s => s.type === 'RUN_TASK' && s.task?.type === 'EMAIL');
+    const emailSteps = ensureArray(editingBot.steps).filter(s => s.type === 'RUN_TASK' && s.task?.type === 'EMAIL');
     for (const step of emailSteps) {
       if (!step.task?.googleDocTemplateId) {
         alert('אנא הזן מזהה שבלונה (Google Doc Template ID) כדי שהאוטומציה תוכל לפעול.');
@@ -446,8 +467,8 @@ const TriggersPage: React.FC<TriggersPageProps> = ({ user }) => {
         ...editingBot,
         action_config: { 
           event: editingBot.event, 
-          steps: Array.isArray(editingBot.steps) ? editingBot.steps : (editingBot.steps ? [editingBot.steps] : []),
-          linked_child_tables: Array.isArray(editingBot.linked_child_tables) ? editingBot.linked_child_tables : (editingBot.linked_child_tables ? [editingBot.linked_child_tables] : [])
+          steps: ensureArray(editingBot.steps),
+          linked_child_tables: ensureArray(editingBot.linked_child_tables)
         }
       };
       const savedData = await dbService.saveBot(payload);
@@ -457,8 +478,8 @@ const TriggersPage: React.FC<TriggersPageProps> = ({ user }) => {
         isActive: savedData.is_active,
         lastExecuted: editingBot.lastExecuted,
         event: savedData.action_config.event,
-        steps: Array.isArray(savedData.action_config.steps) ? savedData.action_config.steps : (savedData.action_config.steps ? [savedData.action_config.steps] : []),
-        linked_child_tables: Array.isArray(savedData.action_config.linked_child_tables) ? savedData.action_config.linked_child_tables : (savedData.action_config.linked_child_tables ? [savedData.action_config.linked_child_tables] : []),
+        steps: ensureArray(savedData.action_config.steps),
+        linked_child_tables: ensureArray(savedData.action_config.linked_child_tables),
         templateId: savedData.template_id
       };
       
@@ -520,21 +541,18 @@ const TriggersPage: React.FC<TriggersPageProps> = ({ user }) => {
       type: 'RUN_TASK',
       task: { type: 'EMAIL' }
     };
-    const currentSteps = Array.isArray(editingBot.steps) ? editingBot.steps : (editingBot.steps ? [editingBot.steps] : []);
-    setEditingBot({ ...editingBot, steps: [...currentSteps, newStep] });
+    setEditingBot({ ...editingBot, steps: [...ensureArray(editingBot.steps), newStep] });
   };
 
   const updateStep = (stepId: string, updates: Partial<BotStep>) => {
     if (!editingBot) return;
-    const currentSteps = Array.isArray(editingBot.steps) ? editingBot.steps : (editingBot.steps ? [editingBot.steps] : []);
-    const newSteps = currentSteps.map(s => s.id === stepId ? { ...s, ...updates } : s);
+    const newSteps = ensureArray(editingBot.steps).map(s => s.id === stepId ? { ...s, ...updates } : s);
     setEditingBot({ ...editingBot, steps: newSteps });
   };
 
   const removeStep = (stepId: string) => {
     if (!editingBot) return;
-    const currentSteps = Array.isArray(editingBot.steps) ? editingBot.steps : (editingBot.steps ? [editingBot.steps] : []);
-    setEditingBot({ ...editingBot, steps: currentSteps.filter(s => s.id !== stepId) });
+    setEditingBot({ ...editingBot, steps: ensureArray(editingBot.steps).filter(s => s.id !== stepId) });
   };
 
   if (!canView) return null;
@@ -601,7 +619,7 @@ const TriggersPage: React.FC<TriggersPageProps> = ({ user }) => {
                           </span>
                         </td>
                         <td className="px-4 py-4 font-mono text-sm text-blue-600">{bot.event.targetTable}</td>
-                        <td className="px-4 py-4 text-slate-600 font-medium">{(Array.isArray(bot.steps) ? bot.steps : (bot.steps ? [bot.steps] : [])).length} שלבים</td>
+                        <td className="px-4 py-4 text-slate-600 font-medium">{ensureArray(bot.steps).length} שלבים</td>
                         <td className="px-4 py-4">
                           <button 
                             onClick={(e) => canEdit && toggleBotStatus(e, bot.id)} 
@@ -767,7 +785,7 @@ const TriggersPage: React.FC<TriggersPageProps> = ({ user }) => {
                   </div>
 
                   {/* Steps Nodes */}
-                  {(Array.isArray(editingBot.steps) ? editingBot.steps : (editingBot.steps ? [editingBot.steps] : [])).map((step, idx) => (
+                  {ensureArray(editingBot.steps).map((step, idx) => (
                     <div key={step.id} className="relative flex items-center justify-center">
                       <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-sm z-10 w-full text-center group hover:border-blue-400 transition-colors">
                         <div className="text-[10px] font-bold text-slate-400 uppercase">{step.type}</div>
@@ -839,9 +857,9 @@ const TriggersPage: React.FC<TriggersPageProps> = ({ user }) => {
                           <label key={t.id} className="flex items-center gap-3 p-2 hover:bg-white rounded-lg transition-colors cursor-pointer group">
                             <input 
                               type="checkbox"
-                              checked={Array.isArray(editingBot.linked_child_tables) && editingBot.linked_child_tables.includes(t.id)}
+                              checked={ensureArray(editingBot.linked_child_tables).includes(t.id)}
                               onChange={e => {
-                                const current = Array.isArray(editingBot.linked_child_tables) ? editingBot.linked_child_tables : (editingBot.linked_child_tables ? [editingBot.linked_child_tables] : []);
+                                const current = ensureArray(editingBot.linked_child_tables);
                                 if (e.target.checked) {
                                   setEditingBot({...editingBot, linked_child_tables: [...current, t.id]});
                                 } else {
@@ -948,12 +966,12 @@ const TriggersPage: React.FC<TriggersPageProps> = ({ user }) => {
                   </div>
 
                   <div className="space-y-6">
-                    {(Array.isArray(editingBot.steps) ? editingBot.steps : (editingBot.steps ? [editingBot.steps] : [])).length === 0 ? (
+                    {ensureArray(editingBot.steps).length === 0 ? (
                       <div className="text-center py-8 bg-slate-50 rounded-2xl border border-dashed border-slate-300 text-slate-400 font-medium">
                         לא הוגדרו שלבים. לחץ על "הוסף שלב" כדי להתחיל.
                       </div>
                     ) : (
-                      (Array.isArray(editingBot.steps) ? editingBot.steps : (editingBot.steps ? [editingBot.steps] : [])).map((step, index) => (
+                      ensureArray(editingBot.steps).map((step, index) => (
                         <div key={step.id} className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
                           <div className="bg-slate-50 p-4 border-b flex items-center justify-between">
                             <div className="flex items-center gap-3 w-1/2">
@@ -1163,7 +1181,7 @@ const TriggersPage: React.FC<TriggersPageProps> = ({ user }) => {
                     <div>
                       <div className="text-[10px] font-bold text-slate-500 uppercase mb-2">System Variables</div>
                       <div className="space-y-1">
-                        {['[_THISROW_BEFORE]', '[_THISROW_AFTER]', 'USEREMAIL()', 'USERNAME()', 'USERROLE()', 'NOW()', 'TODAY()', 'TIMENOW()', 'UNIQUEID()', 'UNIQUEID_V4()'].map(v => (
+                        {['[_THISROW_BEFORE]', '[_THISROW_AFTER]', 'USEREMAIL()', 'NOW()', 'TODAY()'].map(v => (
                           <div key={v} className="p-2 hover:bg-slate-800 rounded cursor-pointer text-xs font-mono text-blue-400">{v}</div>
                         ))}
                       </div>
