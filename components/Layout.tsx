@@ -1,5 +1,6 @@
 
 import React from 'react';
+import { ConnectionBadge } from '../src/components/ConnectionBadge';
 import { 
   LayoutDashboard, 
   Users, 
@@ -97,25 +98,7 @@ const Layout: React.FC<LayoutProps> = ({ children, user, onLogout, activeScreen,
 
           {/* Sync Status at the top */}
           <div className="flex flex-col gap-2">
-            <div className={`flex items-center justify-between px-3 py-2 rounded-lg transition-colors ${
-              isOnline ? 'bg-emerald-500/10 text-emerald-500' : 'bg-rose-500/10 text-rose-500'
-            }`}>
-              <div className="flex items-center gap-2">
-                {isOnline ? <Wifi size={14} /> : <WifiOff size={14} />}
-                <span className="text-[10px] font-bold uppercase tracking-wider">{getStatusMessage()}</span>
-              </div>
-              
-              {isOnline && (
-                <button 
-                  onClick={() => triggerSync()}
-                  disabled={isSyncing}
-                  className={`p-1 hover:bg-emerald-500/20 rounded-full transition-transform ${isSyncing ? 'animate-spin' : ''}`}
-                  title="סנכרן עכשיו"
-                >
-                  <RefreshCw size={14} />
-                </button>
-              )}
-            </div>
+            <ConnectionBadge />
             {lastSyncTime && (
               <div className="text-[9px] text-slate-500 text-center">
                 סנכרון אחרון: {lastSyncTime.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' })}

@@ -1234,7 +1234,18 @@ class DBService {
   }
 
   async updateFormTemplate(id: string, updates: Partial<FormTemplate>) {
-    const payload: any = { id };
+    // Fetch existing record to avoid losing NOT NULL fields (e.g. form_key)
+    // when only a partial update is provided (e.g. only navigation_config or tableName)
+    const existingArr = await this.getTableData('form_templates', { id });
+    const existing = existingArr.length > 0 ? existingArr[0] : {};
+
+    // Start payload from existing record so all NOT NULL columns are present
+    const payload: any = {
+      ...existing,
+      id,
+    };
+
+    // Override only the fields that were explicitly passed in (original logic preserved)
     if (updates.name !== undefined) payload.name = updates.name;
     if (updates.description !== undefined) payload.description = updates.description;
     if (updates.isActive !== undefined) payload.is_active = updates.isActive;
@@ -1701,6 +1712,11 @@ class DBService {
 
       // 4. Execute each bot
       for (const bot of relevantBots) {
+        // Race Condition Mitigation: Wait for Supabase to finish processing child records
+        console.log(`[Automation] ⏳ Waiting 30 seconds for child records to settle in Supabase before executing bot: ${bot.name}...`);
+        await new Promise(resolve => setTimeout(resolve, 30000));
+        console.log(`[Automation] ✅ Wait complete. Resuming execution for ${bot.name}.`);
+
         console.log(`[Automation] Executing bot: ${bot.name}`);
         
         let rawSteps = bot.action_config?.steps || bot.steps;
