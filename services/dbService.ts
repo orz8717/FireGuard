@@ -1201,7 +1201,8 @@ class DBService {
           supabaseConfig: isLegacyArray ? f.supabase_config : (rawOptions.supabaseConfig || f.supabase_config),
           targetFormId: isLegacyArray ? f.target_form_id : (rawOptions.targetFormId || f.target_form_id),
           isVirtual: isLegacyArray ? !!f.is_virtual : !!(rawOptions.isVirtual || f.is_virtual),
-          isHidden: isLegacyArray ? !!f.is_hidden : !!(rawOptions.isHidden || f.is_hidden)
+          isHidden: isLegacyArray ? !!f.is_hidden : !!(rawOptions.isHidden || f.is_hidden),
+          barcode_enabled: isLegacyArray ? !!f.barcode_enabled : !!(rawOptions.barcode_enabled || f.barcode_enabled) // ADDED: barcode_enabled
         };
       })
     })) as FormTemplate[];
@@ -1285,7 +1286,8 @@ class DBService {
           noLabel: f.noLabel,
           targetFormId: f.targetFormId,
           isVirtual: !!f.isVirtual,
-          isHidden: !!f.isHidden
+          isHidden: !!f.isHidden,
+          barcode_enabled: !!f.barcode_enabled // ADDED: barcode_enabled
         }
       }));
       for (const payload of upsertPayload) {

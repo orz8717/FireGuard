@@ -158,6 +158,7 @@ export interface FormField {
   isVirtual?: boolean;
   isHidden?: boolean;
   isReadOnly?: boolean;
+  barcode_enabled?: boolean; // ADDED: barcode_enabled
 }
 
 export interface AuditLog {

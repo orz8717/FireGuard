@@ -27,8 +27,10 @@ import {
   CreditCard,
   Building,
   QrCode,
-  ClipboardList
+  ClipboardList,
+  Camera // ADDED: Camera
 } from 'lucide-react';
+import BarcodeScanner from './BarcodeScanner'; // ADDED: BarcodeScanner
 
 interface DynamicFormProps {
   template: FormTemplate;
@@ -376,6 +378,9 @@ const DynamicForm: React.FC<DynamicFormProps> = ({
     return base;
   });
 
+  // ADDED: activeScannerField state
+  const [activeScannerField, setActiveScannerField] = React.useState<string | null>(null);
+
   // ============================================================
   // על טעינה: שמור parentRowId ו-parentTemplateId מה-URL ל-localStorage
   // ============================================================
@@ -392,39 +397,40 @@ const DynamicForm: React.FC<DynamicFormProps> = ({
     }
   }, []);
 
+  const initialValuesStr = JSON.stringify(initialValues);
   React.useEffect(() => {
-  const base = { ...initialValues };
-  
-  const savedParentData = localStorage.getItem('parentFormData');
- 
-  
-  if (savedParentData) {
-    try {
-      const parsed = JSON.parse(savedParentData);
-      // ✅ אל תדרוס TEMP_CHILD_DATA אם כבר קיים ב-initialValues
-      const { TEMP_CHILD_DATA: _ignore, ...parsedWithoutChild } = parsed;
-      Object.assign(base, parsedWithoutChild);
-    } catch (e) {
-      console.error("Failed to parse parentFormData", e);
-    }
-  }
+    const base = { ...initialValues };
     
-  if (!base.id && !base.ROWID && !isPreview) {
-    base.id = generateUUID();
-    base.ROWID = generateROWID();
-  }
-
-  template.fields.forEach(f => {
-    if (base[f.fieldKey] === undefined) {
-      if (f.fieldType === FieldType.ENUM_LIST || f.fieldType === FieldType.MULTI_SELECT) {
-        base[f.fieldKey] = [];
-      } else {
-        base[f.fieldKey] = '';
+    const savedParentData = localStorage.getItem('parentFormData');
+   
+    
+    if (savedParentData) {
+      try {
+        const parsed = JSON.parse(savedParentData);
+        // ✅ אל תדרוס TEMP_CHILD_DATA אם כבר קיים ב-initialValues
+        const { TEMP_CHILD_DATA: _ignore, ...parsedWithoutChild } = parsed;
+        Object.assign(base, parsedWithoutChild);
+      } catch (e) {
+        console.error("Failed to parse parentFormData", e);
       }
     }
-  });
-  setFormData(base);
-}, [initialValues, template]);
+      
+    if (!base.id && !base.ROWID && !isPreview) {
+      base.id = generateUUID();
+      base.ROWID = generateROWID();
+    }
+
+    template.fields.forEach(f => {
+      if (base[f.fieldKey] === undefined) {
+        if (f.fieldType === FieldType.ENUM_LIST || f.fieldType === FieldType.MULTI_SELECT) {
+          base[f.fieldKey] = [];
+        } else {
+          base[f.fieldKey] = '';
+        }
+      }
+    });
+    setFormData(base);
+  }, [initialValuesStr, template]);
 
   const formDataRef = React.useRef(formData);
   React.useEffect(() => { formDataRef.current = formData; }, [formData]);
@@ -797,6 +803,16 @@ const DynamicForm: React.FC<DynamicFormProps> = ({
     
     let extraData = {};
     if (key === 'customerId' || key === 'customer_id') {
+      // If value is not a UUID, it might be a barcode (customer number)
+      if (typeof value === 'string' && value.length > 0 && !isUUID(value)) {
+        const found = contextData?.['Customers']?.find((c: any) => 
+          String(c.customer_number) === value || String(c.customerNumber) === value
+        );
+        if (found) {
+          value = found.id;
+        }
+      }
+
       const otherKey = key === 'customerId' ? 'customer_id' : 'customerId';
       const selectedCustomer = contextData?.['Customers']?.find((c: any) => c.id === value);
       console.log("Selected Data:", selectedCustomer);
@@ -936,6 +952,22 @@ const DynamicForm: React.FC<DynamicFormProps> = ({
     const isCalculated = !!field.calculationFormula;
     const isFieldReadOnly = readOnly || isCalculated || isLinked || (loadingParent && isPullingFromParent) || field.isReadOnly;
 
+    // ADDED: Scan button component
+    const ScanButton = () => {
+      const isCustomerField = field.fieldKey === 'customerId' || field.fieldKey === 'customer_id';
+      if ((!field.barcode_enabled && !isCustomerField) || isFieldReadOnly) return null;
+      return (
+        <button
+          type="button"
+          onClick={() => setActiveScannerField(field.fieldKey)}
+          className="absolute left-3 top-1/2 -translate-y-1/2 p-1.5 bg-purple-100 text-purple-600 rounded-lg hover:bg-purple-200 transition-colors z-10"
+          title="Scan barcode"
+        >
+          <Camera size={16} />
+        </button>
+      );
+    };
+
     const commonClasses = `w-full p-3.5 border-2 rounded-2xl outline-none transition-all duration-200 ${
       hasError ? 'border-red-400 bg-red-50' : 'border-slate-100 focus:border-blue-500 focus:bg-white'
     } ${isCalculated || isLinked || (loadingParent && isPullingFromParent) || field.isReadOnly ? 'bg-slate-50 font-bold text-blue-800' : 'bg-white shadow-sm'} ${isCalculating ? 'animate-pulse opacity-70' : ''}`;
@@ -958,35 +990,49 @@ const DynamicForm: React.FC<DynamicFormProps> = ({
           {(() => {
             switch (field.fieldType) {
               case FieldType.LONG_TEXT:
-                return <textarea disabled={isFieldReadOnly} value={isCalculating ? 'טוען...' : (formData[field.fieldKey] ?? '')} onChange={e => handleChange(field.fieldKey, e.target.value)} className={`${commonClasses} min-h-[100px] resize-none`} />;
+                return (
+                  <div className="relative">
+                    <textarea disabled={isFieldReadOnly} value={isCalculating ? 'טוען...' : (formData[field.fieldKey] ?? '')} onChange={e => handleChange(field.fieldKey, e.target.value)} className={`${commonClasses} min-h-[100px] resize-none ${field.barcode_enabled ? 'pl-12' : ''}`} />
+                    <ScanButton />
+                  </div>
+                );
               case FieldType.NUMBER:
               case FieldType.DECIMAL:
               case FieldType.PRICE:
               case FieldType.PERCENT:
                 return (
                   <div className="relative">
-                    <input type="text" disabled={isFieldReadOnly} value={isCalculating ? 'טוען...' : (formData[field.fieldKey] ?? '')} onChange={e => handleChange(field.fieldKey, e.target.value)} className={commonClasses} />
-                    <div className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">
-                      {field.fieldType === FieldType.PRICE ? <DollarSign size={16}/> : field.fieldType === FieldType.PERCENT ? <Percent size={16}/> : <Hash size={16}/>}
-                    </div>
+                    <input type="text" disabled={isFieldReadOnly} value={isCalculating ? 'טוען...' : (formData[field.fieldKey] ?? '')} onChange={e => handleChange(field.fieldKey, e.target.value)} className={`${commonClasses} ${field.barcode_enabled ? 'pl-12' : ''}`} />
+                    {field.barcode_enabled ? (
+                      <ScanButton />
+                    ) : (
+                      <div className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400">
+                        {field.fieldType === FieldType.PRICE ? <DollarSign size={16}/> : field.fieldType === FieldType.PERCENT ? <Percent size={16}/> : <Hash size={16}/>}
+                      </div>
+                    )}
                   </div>
                 );
               case FieldType.EMAIL:
                 return (
                   <div className="relative">
-                    <input type="email" disabled={isFieldReadOnly} value={isCalculating ? 'טוען...' : (formData[field.fieldKey] ?? '')} onChange={e => handleChange(field.fieldKey, e.target.value)} className={commonClasses} />
-                    <Mail size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <input type="email" disabled={isFieldReadOnly} value={isCalculating ? 'טוען...' : (formData[field.fieldKey] ?? '')} onChange={e => handleChange(field.fieldKey, e.target.value)} className={`${commonClasses} ${field.barcode_enabled ? 'pl-12' : ''}`} />
+                    {field.barcode_enabled ? <ScanButton /> : <Mail size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />}
                   </div>
                 );
               case FieldType.PHONE:
                 return (
                   <div className="relative">
-                    <input type="tel" disabled={isFieldReadOnly} value={isCalculating ? 'טוען...' : (formData[field.fieldKey] ?? '')} onChange={e => handleChange(field.fieldKey, e.target.value)} className={commonClasses} />
-                    <Phone size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <input type="tel" disabled={isFieldReadOnly} value={isCalculating ? 'טוען...' : (formData[field.fieldKey] ?? '')} onChange={e => handleChange(field.fieldKey, e.target.value)} className={`${commonClasses} ${field.barcode_enabled ? 'pl-12' : ''}`} />
+                    {field.barcode_enabled ? <ScanButton /> : <Phone size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />}
                   </div>
                 );
               case FieldType.DATE:
-                return <input type="date" disabled={isFieldReadOnly} value={isCalculating ? 'טוען...' : (formData[field.fieldKey] ?? '')} onChange={e => handleChange(field.fieldKey, e.target.value)} className={commonClasses} />;
+                return (
+                  <div className="relative">
+                    <input type="date" disabled={isFieldReadOnly} value={isCalculating ? 'טוען...' : (formData[field.fieldKey] ?? '')} onChange={e => handleChange(field.fieldKey, e.target.value)} className={`${commonClasses} ${field.barcode_enabled ? 'pl-12' : ''}`} />
+                    <ScanButton />
+                  </div>
+                );
               case FieldType.YES_NO:
               case FieldType.BOOLEAN:
                 const currentYesLabel = field.yesLabel || 'כן';
@@ -1057,9 +1103,33 @@ const DynamicForm: React.FC<DynamicFormProps> = ({
               case FieldType.SELECT:
               case FieldType.ENUM_LIST:
               case FieldType.MULTI_SELECT:
-                return <EnumSelector field={field} value={formData[field.fieldKey] ?? ''} onChange={(val) => handleChange(field.fieldKey, val)} readOnly={isFieldReadOnly} isMulti={field.fieldType === FieldType.ENUM_LIST || field.fieldType === FieldType.MULTI_SELECT} commonClasses={commonClasses} openDropdown={openDropdown} setOpenDropdown={setOpenDropdown} dropdownRef={dropdownRef} selectSearch={selectSearch} setSelectSearch={setSelectSearch} />;
+                const isCustomerField = field.fieldKey === 'customerId' || field.fieldKey === 'customer_id';
+                const showBarcode = field.barcode_enabled || isCustomerField;
+                return (
+                  <div className="relative">
+                    <EnumSelector 
+                      field={field} 
+                      value={formData[field.fieldKey] ?? ''} 
+                      onChange={(val) => handleChange(field.fieldKey, val)} 
+                      readOnly={isFieldReadOnly} 
+                      isMulti={field.fieldType === FieldType.ENUM_LIST || field.fieldType === FieldType.MULTI_SELECT} 
+                      commonClasses={`${commonClasses} ${showBarcode ? 'pl-12' : ''}`} 
+                      openDropdown={openDropdown} 
+                      setOpenDropdown={setOpenDropdown} 
+                      dropdownRef={dropdownRef} 
+                      selectSearch={selectSearch} 
+                      setSelectSearch={setSelectSearch} 
+                    />
+                    <ScanButton />
+                  </div>
+                );
               default:
-                return <input type="text" disabled={isFieldReadOnly} value={formData[field.fieldKey] ?? ''} onChange={e => handleChange(field.fieldKey, e.target.value)} className={commonClasses} />;
+                return (
+                  <div className="relative">
+                    <input type="text" disabled={isFieldReadOnly} value={formData[field.fieldKey] ?? ''} onChange={e => handleChange(field.fieldKey, e.target.value)} className={`${commonClasses} ${field.barcode_enabled ? 'pl-12' : ''}`} />
+                    <ScanButton />
+                  </div>
+                );
             }
           })()}
           {isLinked && (
@@ -1071,6 +1141,19 @@ const DynamicForm: React.FC<DynamicFormProps> = ({
         </div>
         {hasError && <p className="text-[10px] font-black text-red-500 flex items-center gap-1 px-1 animate-in slide-in-from-top-1"><AlertCircle size={10}/> {errors[field.fieldKey]}</p>}
       </div>
+    );
+  };
+
+  const renderScanner = () => {
+    if (!activeScannerField) return null;
+    return (
+      <BarcodeScanner 
+        onResult={(result) => {
+          handleChange(activeScannerField, result);
+          setActiveScannerField(null);
+        }}
+        onClose={() => setActiveScannerField(null)}
+      />
     );
   };
 
@@ -1355,6 +1438,7 @@ const DynamicForm: React.FC<DynamicFormProps> = ({
           )}
         </div>
       </div>
+      {renderScanner()}
     </form>
   );
 };

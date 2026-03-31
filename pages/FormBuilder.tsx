@@ -33,7 +33,8 @@ import {
   Sparkles,
   ArrowLeft,
   Check,
-  Copy
+  Copy,
+  QrCode // ADDED: QrCode
 } from 'lucide-react';
 import DynamicForm from '../components/DynamicForm';
 import { authService } from '../services/authService';
@@ -1128,6 +1129,25 @@ const FormBuilder: React.FC = () => {
                       </div>
                       <div className={`w-10 h-5 rounded-full relative transition-colors ${editingField.isHidden ? 'bg-slate-400' : 'bg-blue-500'}`}>
                         <div className={`absolute top-1 w-3 h-3 bg-white rounded-full transition-all ${editingField.isHidden ? 'left-1' : 'left-6'}`} />
+                      </div>
+                    </button>
+
+                    {/* ADDED: barcode_enabled toggle */}
+                    <button 
+                      onClick={() => setEditingField({...editingField, barcode_enabled: !editingField.barcode_enabled})}
+                      className={`w-full p-4 rounded-2xl border-2 font-black transition-all flex items-center justify-between ${editingField.barcode_enabled ? 'bg-purple-50 border-purple-200 text-purple-700' : 'bg-slate-50 border-slate-100 text-slate-400'}`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <QrCode size={16} className={editingField.barcode_enabled ? 'text-purple-500' : 'text-slate-300'} />
+                        <div className="text-right">
+                          <div className="text-sm">Enable barcode scanning</div>
+                          <div className="text-[10px] opacity-70">
+                            {editingField.barcode_enabled ? 'Users can scan a barcode into this field' : 'Disabled'}
+                          </div>
+                        </div>
+                      </div>
+                      <div className={`w-10 h-5 rounded-full relative transition-colors ${editingField.barcode_enabled ? 'bg-purple-500' : 'bg-slate-300'}`}>
+                        <div className={`absolute top-1 w-3 h-3 bg-white rounded-full transition-all ${editingField.barcode_enabled ? 'left-1' : 'left-6'}`} />
                       </div>
                     </button>
                   </div>
