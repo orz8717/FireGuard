@@ -16,6 +16,8 @@ View your app in AI Studio: https://ai.studio/apps/0cbc0958-4583-4132-b4d9-86218
 2. Copy `.env.example` to `.env.local` and fill in the values
 3. Run the app: `npm run dev`
 
+> For admin features (table management, user creation) to work locally, use `vercel dev` instead of `npm run dev`. This starts both the frontend and the `/api/admin-proxy` route together.
+
 ## Environment Variables
 
 See [.env.example](.env.example) for the full list. Quick summary:
@@ -37,8 +39,9 @@ See [.env.example](.env.example) for the full list. Quick summary:
 1. Add it to `.env.local` and to Netlify's Environment Variables (uncheck "Secret").
 2. Add its name to `SECRETS_SCAN_OMIT_KEYS` in [netlify.toml](netlify.toml) so the scanner does not block the build.
 
-### Netlify UI checklist (first deploy)
+### Vercel dashboard checklist (first deploy)
 
-1. **Add** `SUPABASE_SERVICE_ROLE_KEY` — mark as **Secret**, scope to **Functions**.
-2. **Add** `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `VITE_GAS_WEBHOOK_URL`, `VITE_ADMIN_EMAIL` — **uncheck** "Contains secret values".
-3. Delete the old `VITE_SUPABASE_SERVICE_ROLE_KEY` entry if it still exists.
+1. Go to **Settings → Environment Variables**.
+2. **Delete** `VITE_SUPABASE_SERVICE_ROLE_KEY` if it exists.
+3. **Add** `SUPABASE_SERVICE_ROLE_KEY` — mark as **Sensitive**, available to all environments.
+4. Add the remaining `VITE_*` variables for the Production environment.

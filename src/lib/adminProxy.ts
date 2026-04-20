@@ -8,7 +8,7 @@
 
 import { supabase } from './supabase';
 
-const PROXY_URL = '/.netlify/functions/admin-proxy';
+const PROXY_URL = '/api/admin-proxy';
 
 async function getToken(): Promise<string | null> {
   const { data: { session } } = await supabase.auth.getSession();
