@@ -399,25 +399,30 @@ class DBService {
     }
   }
 
+  private _columnCache = new Map<string, { column_name: string; data_type: string; ordinal_position: number; is_updatable: string }[]>();
+
   async getTableColumns(tableName: string): Promise<{ column_name: string; data_type: string; ordinal_position: number; is_updatable: string }[]> {
-    // 1. Try direct supabase call (no proxy overhead)
+    if (this._columnCache.has(tableName)) return this._columnCache.get(tableName)!;
+
+    // 1. Admin proxy — has service_role, can read information_schema for any table
     try {
-      const { data, error } = await supabase.rpc('get_table_columns', { p_table_name: tableName });
-      if (!error && data && data.length > 0) return data;
+      const { data, error } = await getSupabaseAdmin().rpc('get_table_columns', { p_table_name: tableName });
+      if (!error && data && data.length > 0) {
+        this._columnCache.set(tableName, data);
+        return data;
+      }
     } catch {}
 
-    // 2. Fallback: derive from SchemaService metadata (already uses supabase client directly)
+    // 2. Fallback: SchemaService (anon client, may lack dynamic columns)
     try {
       const metadata = await SchemaService.getRawMetadata();
       const cols = metadata
         .filter(m => m.table_name === tableName)
-        .map((m, i) => ({
-          column_name: m.column_name,
-          data_type: m.data_type,
-          ordinal_position: i,
-          is_updatable: 'YES',
-        }));
-      if (cols.length > 0) return cols;
+        .map((m, i) => ({ column_name: m.column_name, data_type: m.data_type, ordinal_position: i, is_updatable: 'YES' }));
+      if (cols.length > 0) {
+        this._columnCache.set(tableName, cols);
+        return cols;
+      }
     } catch {}
 
     return [];
