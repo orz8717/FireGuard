@@ -5,6 +5,16 @@ import tailwindcss from '@tailwindcss/vite';
 
 export default defineConfig(({ mode }) => {
     const env = loadEnv(mode, '.', '');
+
+    // Guard: the service-role key must never be bundled into the client.
+    if (env.VITE_SUPABASE_SERVICE_ROLE_KEY) {
+      throw new Error(
+        '[vite.config] VITE_SUPABASE_SERVICE_ROLE_KEY must not exist. ' +
+        'The service_role key is server-only. ' +
+        'Rename it to SUPABASE_SERVICE_ROLE_KEY and use it only in netlify/functions/.'
+      );
+    }
+
     return {
       server: {
         port: 3000,

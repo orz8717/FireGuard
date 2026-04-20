@@ -10,11 +10,35 @@ View your app in AI Studio: https://ai.studio/apps/0cbc0958-4583-4132-b4d9-86218
 
 ## Run Locally
 
-**Prerequisites:**  Node.js
+**Prerequisites:** Node.js
 
+1. Install dependencies: `npm install`
+2. Copy `.env.example` to `.env.local` and fill in the values
+3. Run the app: `npm run dev`
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+## Environment Variables
+
+See [.env.example](.env.example) for the full list. Quick summary:
+
+| Variable | Where it lives | Notes |
+|---|---|---|
+| `VITE_SUPABASE_URL` | Browser + Netlify | Public — uncheck "Secret" in Netlify UI |
+| `VITE_SUPABASE_ANON_KEY` | Browser + Netlify | Public by design; RLS enforces security |
+| `VITE_GAS_WEBHOOK_URL` | Browser + Netlify | Public |
+| `VITE_ADMIN_EMAIL` | Browser + Netlify | Public |
+| `SUPABASE_SERVICE_ROLE_KEY` | **Netlify Functions only** | **Secret — never prefix with `VITE_`** |
+
+### Why the service-role key is server-only
+
+`SUPABASE_SERVICE_ROLE_KEY` bypasses Supabase Row Level Security. If it were in the browser bundle, any visitor could extract it and read or delete all data. It lives exclusively in `netlify/functions/admin-proxy.ts`, which verifies the caller's JWT before performing any privileged operation.
+
+### Adding a new public `VITE_` variable
+
+1. Add it to `.env.local` and to Netlify's Environment Variables (uncheck "Secret").
+2. Add its name to `SECRETS_SCAN_OMIT_KEYS` in [netlify.toml](netlify.toml) so the scanner does not block the build.
+
+### Netlify UI checklist (first deploy)
+
+1. **Add** `SUPABASE_SERVICE_ROLE_KEY` — mark as **Secret**, scope to **Functions**.
+2. **Add** `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, `VITE_GAS_WEBHOOK_URL`, `VITE_ADMIN_EMAIL` — **uncheck** "Contains secret values".
+3. Delete the old `VITE_SUPABASE_SERVICE_ROLE_KEY` entry if it still exists.

@@ -1,9 +1,9 @@
 
 import { createClient } from '@supabase/supabase-js';
+import { adminProxy } from './adminProxy';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL as string;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY as string;
-const serviceRoleKey = import.meta.env.VITE_SUPABASE_SERVICE_ROLE_KEY as string;
 
 export { supabaseUrl, supabaseAnonKey };
 
@@ -31,19 +31,11 @@ export const getSupabaseAnon = () => {
   return _supabaseAnon;
 };
 
-let _supabaseAdmin: ReturnType<typeof createClient> | null = null;
-export const getSupabaseAdmin = () => {
-  if (!_supabaseAdmin) {
-    _supabaseAdmin = createClient(supabaseUrl, serviceRoleKey, {
-      db: { schema: 'public' },
-      auth: {
-        persistSession: false,
-        autoRefreshToken: false,
-        detectSessionInUrl: false
-      }
-    });
-  }
-  return _supabaseAdmin;
-};
+/**
+ * Returns the admin proxy — routes all calls through the Netlify Function
+ * (netlify/functions/admin-proxy.ts) using SUPABASE_SERVICE_ROLE_KEY server-side.
+ * The service-role key is never exposed to the browser.
+ */
+export const getSupabaseAdmin = () => adminProxy;
 
-export const hasAdminPrivileges = () => !!serviceRoleKey;
+export const hasAdminPrivileges = () => true;
