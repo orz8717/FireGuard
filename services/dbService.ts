@@ -400,17 +400,27 @@ class DBService {
   }
 
   async getTableColumns(tableName: string): Promise<{ column_name: string; data_type: string; ordinal_position: number; is_updatable: string }[]> {
+    // 1. Try direct supabase call (no proxy overhead)
     try {
-      const { data, error } = await getSupabaseAdmin().rpc('get_table_columns', { p_table_name: tableName });
-      if (error) {
-        console.error(`[DB] Error getting columns for ${tableName}:`, error);
-        return [];
-      }
-      return data || [];
-    } catch (err) { 
-      console.error(`[DB] Exception getting columns for ${tableName}:`, err);
-      return []; 
-    }
+      const { data, error } = await supabase.rpc('get_table_columns', { p_table_name: tableName });
+      if (!error && data && data.length > 0) return data;
+    } catch {}
+
+    // 2. Fallback: derive from SchemaService metadata (already uses supabase client directly)
+    try {
+      const metadata = await SchemaService.getRawMetadata();
+      const cols = metadata
+        .filter(m => m.table_name === tableName)
+        .map((m, i) => ({
+          column_name: m.column_name,
+          data_type: m.data_type,
+          ordinal_position: i,
+          is_updatable: 'YES',
+        }));
+      if (cols.length > 0) return cols;
+    } catch {}
+
+    return [];
   }
 
   async getVirtualColumns(tableName: string): Promise<string[]> {
