@@ -30,8 +30,8 @@ const AppContent: React.FC<{ user: User | null, setUser: (u: User | null) => voi
         // Dashboard is always accessible
         if (screenKey === 'dashboard') return;
 
-        // Admin override
-        if (user.email === 'orz7178@gmail.com' && screenKey === 'users') return;
+        // ADMIN role always has access to all screens
+        if (user.role === UserRole.ADMIN) return;
 
         // Use local check for immediate offline support
         const canView = await dbService.checkPermissionLocally(user.id, screenKey, 'can_view');
@@ -126,9 +126,16 @@ const AppContent: React.FC<{ user: User | null, setUser: (u: User | null) => voi
     }
 
     const Component = screen.component;
-    
-    // Most components accept user as a prop
-    return <Component user={user} onNavigateToSignup={() => setActiveScreen('signup')} />;
+
+    return (
+      <React.Suspense fallback={
+        <div className="h-full flex items-center justify-center">
+          <div className="w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" />
+        </div>
+      }>
+        <Component user={user} onNavigateToSignup={() => setActiveScreen('signup')} />
+      </React.Suspense>
+    );
   };
 
   return (

@@ -3,16 +3,6 @@ import { useEffect, useRef } from 'react';
 import { supabase, getSupabaseAdmin } from '../src/lib/supabase';
 import { dbService } from '../services/dbService';
 
-/**
- * useBotRealtime Hook
- * 
- * Strictly isolated background listener for Supabase automation bots.
- * Subscribes to INSERT events on tables defined in active bots and triggers
- * the automation logic (GAS Webhook) automatically.
- */
-
-const GAS_WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbx9Aprjm7RISvTet4j6xip62QlaUPeEnAy5cWDj6JKexwmifRyqDQ0PjuDP0Y3cB9Cg/exec';
-
 export const useBotRealtime = () => {
   const processedIds = useRef(new Set<string>());
 

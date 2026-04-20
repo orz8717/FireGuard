@@ -99,20 +99,20 @@ export const pullService = {
       'כיבויים_חצי_שנתי', 'כיבויים_שנתי'
     ];
     
-    try {
-      for (const tableName of allowedTables) {
-        // אימות שהטבלה קיימת בסכימה המקומית לפני המשיכה
-        const table = localDb.table(tableName);
-        if (table) {
-          await this.pullTable(tableName);
-        } else {
-          console.warn(`[PullService] Skipping ${tableName} - not found in local schema.`);
-        }
-      }
-    } catch (error) {
-      console.error("[PullService] Sync cycle interrupted:", error);
-      throw error; 
-    }
+    const validTables = allowedTables.filter(tableName => {
+      const exists = !!localDb.table(tableName);
+      if (!exists) console.warn(`[PullService] Skipping ${tableName} - not found in local schema.`);
+      return exists;
+    });
+
+    const results = await Promise.allSettled(
+      validTables.map(tableName => this.pullTable(tableName))
+    );
+
+    const networkError = results.find(
+      r => r.status === 'rejected' && (r.reason as Error)?.message === 'NETWORK_DISCONNECTED'
+    );
+    if (networkError) throw new Error('NETWORK_DISCONNECTED');
   },
 
   startPeriodicSync() {

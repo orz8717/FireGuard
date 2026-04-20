@@ -2,7 +2,6 @@
 import React from 'react';
 import { Inspection, InspectionType, InspectionStatus, Customer, User, UserRole, FormTemplate, FieldType } from '../types';
 import { dbService } from '../services/dbService';
-import { offlineService } from '../services/offlineService';
 import { supabase } from '../src/lib/supabase';
 import { Plus, Search, Eye, Edit2, Loader2, ClipboardList, Clock, Trash2, Zap, Building, CreditCard, Fingerprint, FileCheck } from 'lucide-react';
 import DynamicForm from '../components/DynamicForm';

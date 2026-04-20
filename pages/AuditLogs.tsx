@@ -26,12 +26,15 @@ const AuditLogs: React.FC<AuditLogsProps> = ({ user }) => {
   const { hasPermission } = usePermissions();
   const canView = hasPermission('audit_logs', 'canView');
 
+  const PAGE_SIZE = 50;
+
   const [logs, setLogs] = React.useState<AuditLog[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [searchTerm, setSearchTerm] = React.useState('');
   const [showOnlyFailures, setShowOnlyFailures] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [expandedErrorId, setExpandedErrorId] = React.useState<string | null>(null);
+  const [page, setPage] = React.useState(1);
 
   const fetchLogs = async () => {
     setLoading(true);
@@ -39,6 +42,7 @@ const AuditLogs: React.FC<AuditLogsProps> = ({ user }) => {
     try {
       const data = await dbService.getAuditLogs();
       setLogs(data);
+      setPage(1);
     } catch (err: any) {
       setError('שגיאה בטעינת יומן פעילות. וודא שקיימת טבלת audit_logs ב-Supabase.');
     } finally {
@@ -56,12 +60,15 @@ const AuditLogs: React.FC<AuditLogsProps> = ({ user }) => {
     const matchesSearch = (log.user_name && log.user_name.toLowerCase().includes(searchTerm.toLowerCase())) ||
       (log.action_type && log.action_type.toLowerCase().includes(searchTerm.toLowerCase())) ||
       (log.description && log.description.toLowerCase().includes(searchTerm.toLowerCase()));
-    
+
     if (showOnlyFailures) {
       return matchesSearch && log.status === 'FAILED';
     }
     return matchesSearch;
   });
+
+  const totalPages = Math.max(1, Math.ceil(filteredLogs.length / PAGE_SIZE));
+  const pagedLogs = filteredLogs.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
   if (!canView) {
     return (
@@ -159,7 +166,7 @@ const AuditLogs: React.FC<AuditLogsProps> = ({ user }) => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-50">
-                  {filteredLogs.map((log) => (
+                  {pagedLogs.map((log) => (
                     <React.Fragment key={log.id}>
                       <tr 
                         className={`hover:bg-slate-50/80 transition-all group ${log.status === 'FAILED' ? 'cursor-pointer' : ''}`}
@@ -248,7 +255,7 @@ const AuditLogs: React.FC<AuditLogsProps> = ({ user }) => {
 
             {/* Mobile Card View */}
             <div className="md:hidden flex flex-col divide-y divide-slate-100">
-              {filteredLogs.map((log) => (
+              {pagedLogs.map((log) => (
                 <div 
                   key={log.id} 
                   className={`p-4 space-y-3 ${log.status === 'FAILED' ? 'cursor-pointer hover:bg-slate-50/50' : ''}`}
@@ -317,6 +324,29 @@ const AuditLogs: React.FC<AuditLogsProps> = ({ user }) => {
           </>
         )}
       </div>
+
+      {/* Pagination controls */}
+      {!loading && totalPages > 1 && (
+        <div className="flex items-center justify-center gap-3 py-2" dir="rtl">
+          <button
+            onClick={() => setPage(p => Math.max(1, p - 1))}
+            disabled={page === 1}
+            className="px-4 py-2 rounded-xl border font-bold text-slate-600 disabled:opacity-40 hover:bg-slate-50 transition-colors"
+          >
+            הקודם
+          </button>
+          <span className="text-sm font-bold text-slate-500">
+            עמוד {page} מתוך {totalPages} ({filteredLogs.length} רשומות)
+          </span>
+          <button
+            onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+            disabled={page === totalPages}
+            className="px-4 py-2 rounded-xl border font-bold text-slate-600 disabled:opacity-40 hover:bg-slate-50 transition-colors"
+          >
+            הבא
+          </button>
+        </div>
+      )}
     </div>
   );
 };

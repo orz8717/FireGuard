@@ -46,9 +46,8 @@ export const PermissionProvider: React.FC<{ children: React.ReactNode; user: Use
   }, [user?.id]);
 
   const hasPermission = (screenKey: string, action: keyof Omit<Permission, 'id' | 'userId' | 'screenKey'>): boolean => {
-    // Safety check for the main admin email to prevent lockout from the users management page
-    // This is the only "code-level" permission left to ensure the system remains manageable
-    if (user?.email === 'orz7178@gmail.com' && screenKey === 'users') return true;
+    // ADMIN role always has full access — avoids lockout without hardcoding an email
+    if (user?.role === UserRole.ADMIN) return true;
 
     const perm = permissions.find(p => p.screenKey === screenKey);
     if (!perm) {

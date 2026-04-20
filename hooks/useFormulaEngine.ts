@@ -210,7 +210,11 @@ export function useFormulaEngine(contextData: Record<string, any[]>, currentUser
       __SELECT: async (tableName: string, returnCol: string, conditionStr: string) => {
         const tableData = contextData[tableName] || [];
         const parsedCondition = conditionStr.replace(/\[([^\]]+)\]/g, `row["$1"]`).replace(/([^<>=!])=([^=])/g, '$1===$2');
-        const condFunc = new Function('row', `try { return ${parsedCondition}; } catch(e) { return false; }`);
+        // Sanitize condition to prevent prototype/global access
+        if (/(__proto__|constructor|prototype|globalThis|window|document|process|fetch|eval|import)/i.test(parsedCondition)) {
+          return [];
+        }
+        const condFunc = new Function('row', `"use strict"; try { return ${parsedCondition}; } catch(e) { return false; }`);
         return tableData.filter((r: any) => condFunc(r)).map((r: any) => r[returnCol]);
       },
 
@@ -253,17 +257,27 @@ export function useFormulaEngine(contextData: Record<string, any[]>, currentUser
     return funcs;
   }, [contextData, currentUser]);
 
+  const BLOCKED_KEYWORDS = /(__proto__|constructor\.prototype|globalThis|window\b|document\b|process\b|fetch\b(?!\s*\()|\beval\b|\bimport\b|\brequire\b|\bFunction\b)/i;
+
   const evaluateFormula = React.useCallback(async (formula: string, data: Record<string, any>) => {
     try {
       if (!formula || formula.trim() === '') return null;
+      if (formula.length > 4000) { console.warn('Formula too long, skipping.'); return null; }
+
       let script = formula;
-      
+
       // Sugar Replacements
       script = script.replace(/SELECT\s*\(\s*([a-zA-Z0-9_]+)\[([^\]]+)\]\s*,\s*(.+?)\s*\)/ig, `__SELECT("$1", "$2", "$3")`);
       script = script.replace(/\[([^\]]+)\]\.\[([^\]]+)\]/g, `__DEREF(data["$1"], "$2")`);
       script = script.replace(/([a-zA-Z0-9_]+)\[([^\]]+)\]/g, `__GET_RELATED_VALUE("$1", "$2", data)`);
       script = script.replace(/\[([^\]]+)\]/g, `data["$1"]`);
       script = script.replace(/([^<>=!])=([^=])/g, '$1===$2');
+
+      // Block dangerous patterns before execution
+      if (BLOCKED_KEYWORDS.test(script)) {
+        console.warn('[FormulaEngine] Blocked potentially unsafe expression:', formula);
+        return null;
+      }
 
       const asyncFuncs = ['LOOKUP', 'IN', '__SELECT', '__DEREF'];
       asyncFuncs.forEach(fn => {
@@ -273,8 +287,8 @@ export function useFormulaEngine(contextData: Record<string, any[]>, currentUser
 
       const keys = Object.keys(formulaFunctions);
       const AsyncFunction = Object.getPrototypeOf(async function(){}).constructor;
-      const evaluator = new AsyncFunction(...keys, 'data', `try { return await (${script}); } catch(e) { return null; }`);
-      
+      const evaluator = new AsyncFunction(...keys, 'data', `"use strict"; try { return await (${script}); } catch(e) { return null; }`);
+
       return await evaluator(...Object.values(formulaFunctions), data);
     } catch (e) {
       console.error("Formula Error:", e);

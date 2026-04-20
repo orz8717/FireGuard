@@ -16,19 +16,19 @@ import {
   TableProperties
 } from 'lucide-react';
 
-// Import components for dynamic rendering
-import Dashboard from '../../pages/Dashboard';
-import Customers from '../../pages/Customers';
-import Inspections from '../../pages/Inspections';
-import Certificates from '../../pages/Certificates';
-import UsersPage from '../../pages/Users';
-import FormBuilder from '../../pages/FormBuilder';
-import Diagnostics from '../../pages/Diagnostics';
-import DbManager from '../../pages/DbManager';
-import AuditLogs from '../../pages/AuditLogs';
-import TriggersPage from '../../pages/TriggersPage';
-import UpdateTables from '../../pages/UpdateTables';
-import ImportExcel from '../../pages/ImportExcel';
+// Lazy-loaded pages — each page is a separate chunk for faster initial load
+const Dashboard = React.lazy(() => import('../../pages/Dashboard'));
+const Customers = React.lazy(() => import('../../pages/Customers'));
+const Inspections = React.lazy(() => import('../../pages/Inspections'));
+const Certificates = React.lazy(() => import('../../pages/Certificates'));
+const UsersPage = React.lazy(() => import('../../pages/Users'));
+const FormBuilder = React.lazy(() => import('../../pages/FormBuilder'));
+const Diagnostics = React.lazy(() => import('../../pages/Diagnostics'));
+const DbManager = React.lazy(() => import('../../pages/DbManager'));
+const AuditLogs = React.lazy(() => import('../../pages/AuditLogs'));
+const TriggersPage = React.lazy(() => import('../../pages/TriggersPage'));
+const UpdateTables = React.lazy(() => import('../../pages/UpdateTables'));
+const ImportExcel = React.lazy(() => import('../../pages/ImportExcel'));
 
 export interface ScreenConfig {
   key: string;

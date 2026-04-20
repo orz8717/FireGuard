@@ -779,6 +779,16 @@ const FormBuilder: React.FC = () => {
           ds[tableName] = [];
         }
       });
+
+      // Fallback: if no tables loaded, use SchemaService column metadata
+      if (Object.keys(ds).length === 0) {
+        const { SchemaService } = await import('../services/schemaService');
+        const schemaMeta = await SchemaService.getSchemaMetadata();
+        Object.entries(schemaMeta).forEach(([tableName, cols]) => {
+          ds[tableName] = Array.from(cols).sort();
+        });
+      }
+
       setDynamicSchema(ds);
       setDynamicTableData(dtd);
     } finally { setIsSchemaLoading(false); }
@@ -1498,20 +1508,79 @@ const FormBuilder: React.FC = () => {
                                 </select>
                               </div>
                               {(editingField.options as any)?.sourceTable && (
-                                <div className="space-y-2">
-                                  <label className="text-xs font-black text-slate-500 uppercase tracking-widest block px-1">עמודת תצוגה</label>
-                                  <select 
-                                    value={(editingField.options as any)?.sourceColumn || ''}
-                                    onChange={(e) => {
-                                      const currentOptions = (editingField.options as any) || {};
-                                      setEditingField({ ...editingField, options: { ...currentOptions, sourceColumn: e.target.value } });
-                                    }}
-                                    className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm font-bold outline-none focus:border-blue-500 appearance-none"
-                                  >
-                                    <option value="">בחר עמודה...</option>
-                                    {(dynamicSchema[(editingField.options as any)?.sourceTable] || []).map((c: string) => <option key={c} value={c}>{c}</option>)}
-                                  </select>
-                                </div>
+                                <>
+                                  <div className="space-y-2">
+                                    <label className="text-xs font-black text-slate-500 uppercase tracking-widest block px-1">עמודת תצוגה</label>
+                                    <select
+                                      value={(editingField.options as any)?.sourceColumn || ''}
+                                      onChange={(e) => {
+                                        const currentOptions = (editingField.options as any) || {};
+                                        setEditingField({ ...editingField, options: { ...currentOptions, sourceColumn: e.target.value } });
+                                      }}
+                                      className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm font-bold outline-none focus:border-blue-500 appearance-none"
+                                    >
+                                      <option value="">בחר עמודה...</option>
+                                      {(dynamicSchema[(editingField.options as any)?.sourceTable] || []).map((c: string) => <option key={c} value={c}>{c}</option>)}
+                                    </select>
+                                  </div>
+
+                                  {/* Filter section */}
+                                  <div className="mt-4 p-4 bg-amber-50 border border-amber-200 rounded-xl space-y-3">
+                                    <p className="text-xs font-black text-amber-700 uppercase tracking-widest">סינון רשימה (אופציונלי)</p>
+
+                                    <div className="space-y-2">
+                                      <label className="text-xs font-bold text-slate-500 block px-1">עמודת סינון בטבלה</label>
+                                      <select
+                                        value={(editingField.options as any)?.filterColumn || ''}
+                                        onChange={(e) => {
+                                          const o = (editingField.options as any) || {};
+                                          setEditingField({ ...editingField, options: { ...o, filterColumn: e.target.value, filterFieldKey: '', filterStaticValue: '' } });
+                                        }}
+                                        className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm font-bold outline-none focus:border-blue-500 appearance-none"
+                                      >
+                                        <option value="">ללא סינון</option>
+                                        {(dynamicSchema[(editingField.options as any)?.sourceTable] || []).map((c: string) => <option key={c} value={c}>{c}</option>)}
+                                      </select>
+                                    </div>
+
+                                    {(editingField.options as any)?.filterColumn && (
+                                      <>
+                                        <div className="space-y-2">
+                                          <label className="text-xs font-bold text-slate-500 block px-1">ערך מגיע מ-שדה בטופס</label>
+                                          <select
+                                            value={(editingField.options as any)?.filterFieldKey || ''}
+                                            onChange={(e) => {
+                                              const o = (editingField.options as any) || {};
+                                              setEditingField({ ...editingField, options: { ...o, filterFieldKey: e.target.value, filterStaticValue: '' } });
+                                            }}
+                                            className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm font-bold outline-none focus:border-blue-500 appearance-none"
+                                          >
+                                            <option value="">בחר שדה...</option>
+                                            {localFields.filter(f => f.fieldKey !== editingField.fieldKey).map(f => (
+                                              <option key={f.fieldKey} value={f.fieldKey}>{f.label || f.fieldKey}</option>
+                                            ))}
+                                          </select>
+                                        </div>
+
+                                        {!(editingField.options as any)?.filterFieldKey && (
+                                          <div className="space-y-2">
+                                            <label className="text-xs font-bold text-slate-500 block px-1">או ערך קבוע</label>
+                                            <input
+                                              type="text"
+                                              value={(editingField.options as any)?.filterStaticValue || ''}
+                                              onChange={(e) => {
+                                                const o = (editingField.options as any) || {};
+                                                setEditingField({ ...editingField, options: { ...o, filterStaticValue: e.target.value } });
+                                              }}
+                                              placeholder="הכנס ערך קבוע לסינון..."
+                                              className="w-full p-3 bg-white border border-slate-200 rounded-xl text-sm font-bold outline-none focus:border-blue-500"
+                                            />
+                                          </div>
+                                        )}
+                                      </>
+                                    )}
+                                  </div>
+                                </>
                               )}
                             </div>
                           )}

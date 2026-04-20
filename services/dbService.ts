@@ -1,4 +1,5 @@
 import { supabase, getSupabaseAdmin, getSupabaseAnon } from '../src/lib/supabase';
+import { GAS_WEBHOOK_URL } from '../src/constants/config';
 import { User, Customer, Inspection, Certificate, FormTemplate, Permission, UserRole, InspectionStatus, InspectionType, FormField, AuditLog } from '../types';
 import { localDb } from './localDb';
 import { syncEngine } from './syncEngine';
@@ -317,9 +318,21 @@ class DBService {
   async getTablesList(): Promise<{ id: string; label: string }[]> {
     try {
       const { data, error } = await getSupabaseAdmin().rpc('get_public_tables');
-      if (error) return [];
-      return (data || []).map((t: { table_name: string }) => ({ id: t.table_name, label: t.table_name }));
-    } catch { return []; }
+      if (!error && data && data.length > 0) {
+        return data.map((t: { table_name: string }) => ({ id: t.table_name, label: t.table_name }));
+      }
+    } catch {}
+
+    // Fallback: use schema metadata from SchemaService
+    try {
+      const schema = await SchemaService.getSchemaMetadata();
+      const tables = Object.keys(schema);
+      if (tables.length > 0) {
+        return tables.map(t => ({ id: t, label: t }));
+      }
+    } catch {}
+
+    return [];
   }
 
   async reloadSchemaCache(): Promise<void> {
@@ -638,7 +651,7 @@ class DBService {
       return data?.[0];
     } catch (error: any) {
       if (error.code === '42501') {
-        window.location.href = '/';
+        throw Object.assign(new Error('PERMISSION_DENIED'), { code: '42501' });
       }
       throw error;
     }
@@ -1710,14 +1723,21 @@ class DBService {
         return;
       }
 
-      const GAS_WEB_APP_URL = 'https://script.google.com/macros/s/AKfycbx9Aprjm7RISvTet4j6xip62QlaUPeEnAy5cWDj6JKexwmifRyqDQ0PjuDP0Y3cB9Cg/exec';
-
       // 4. Execute each bot
       for (const bot of relevantBots) {
-        // Race Condition Mitigation: Wait for Supabase to finish processing child records
-        console.log(`[Automation] ⏳ Waiting 30 seconds for child records to settle in Supabase before executing bot: ${bot.name}...`);
-        await new Promise(resolve => setTimeout(resolve, 30000));
-        console.log(`[Automation] ✅ Wait complete. Resuming execution for ${bot.name}.`);
+        // Poll until the parent record is confirmed in Supabase (max 30s, 2s intervals)
+        console.log(`[Automation] ⏳ Polling for record ${recordId} to settle in Supabase...`);
+        let settled = false;
+        for (let attempt = 0; attempt < 15; attempt++) {
+          await new Promise(r => setTimeout(r, 2000));
+          const { data: check } = await supabase.from(tableName).select('id').eq('id', recordId).maybeSingle();
+          if (check) { settled = true; break; }
+        }
+        if (!settled) {
+          console.warn(`[Automation] Record ${recordId} not found after polling, skipping bot: ${bot.name}`);
+          continue;
+        }
+        console.log(`[Automation] ✅ Record settled. Executing bot: ${bot.name}`);
 
         console.log(`[Automation] Executing bot: ${bot.name}`);
         
@@ -1784,7 +1804,7 @@ class DBService {
 
             console.log(`[Automation] Dispatching flattened payload for bot ${bot.name} to GAS...`);
             
-            fetch(GAS_WEB_APP_URL, {
+            fetch(GAS_WEBHOOK_URL, {
               method: 'POST',
               headers: { 'Content-Type': 'text/plain' },
               body: JSON.stringify(payload)

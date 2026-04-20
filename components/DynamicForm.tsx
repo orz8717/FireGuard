@@ -63,14 +63,20 @@ const EnumSelector: React.FC<{
   dropdownRef: React.RefObject<HTMLDivElement>;
   selectSearch: Record<string, string>;
   setSelectSearch: (val: Record<string, string>) => void;
-}> = ({ field, value, onChange, readOnly, isMulti, commonClasses, openDropdown, setOpenDropdown, dropdownRef, selectSearch, setSelectSearch }) => {
+  formData?: Record<string, any>;
+}> = ({ field, value, onChange, readOnly, isMulti, commonClasses, openDropdown, setOpenDropdown, dropdownRef, selectSearch, setSelectSearch, formData }) => {
   const [options, setOptions] = React.useState<{ value: string; label: string }[]>([]);
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
+  const fieldOpts = field.options as any;
+  const filterColumn: string = fieldOpts?.filterColumn || '';
+  const filterFieldKey: string = fieldOpts?.filterFieldKey || '';
+  const filterStaticValue: string = fieldOpts?.filterStaticValue || '';
+  const filterValue = filterFieldKey && formData ? String(formData[filterFieldKey] ?? '') : filterStaticValue;
+
   React.useEffect(() => {
     const loadOptions = async () => {
-      const fieldOpts = field.options as any;
       if (!fieldOpts) {
         setOptions([]);
         return;
@@ -83,23 +89,28 @@ const EnumSelector: React.FC<{
         setError(null);
         try {
           let actualColumn = fieldOpts.sourceColumn;
-          
+
           const allData = await dbService.getRawTableData(fieldOpts.sourceTable);
-          
+
           if (allData && allData.length > 0) {
             const normalize = (s: string) => s.toLowerCase().replace(/[\s_]/g, '');
             const targetNorm = normalize(fieldOpts.sourceColumn);
             const firstRow = allData[0];
             const keys = Object.keys(firstRow);
-            const match = keys.find(k => k === fieldOpts.sourceColumn) || 
+            const match = keys.find(k => k === fieldOpts.sourceColumn) ||
                           keys.find(k => normalize(k) === targetNorm);
             if (match) actualColumn = match;
 
-            const unique = Array.from(new Set(allData.map(r => r[actualColumn])))
+            // Apply column filter if configured
+            const filtered = (filterColumn && filterValue)
+              ? allData.filter(r => String(r[filterColumn] ?? '') === filterValue)
+              : allData;
+
+            const unique = Array.from(new Set(filtered.map(r => r[actualColumn])))
               .filter(v => v !== null && v !== undefined && v !== '')
               .map(v => ({ value: String(v), label: String(v) }))
               .sort((a, b) => a.label.localeCompare(b.label, 'he'));
-              
+
             setOptions(unique);
           } else {
             setOptions([]);
@@ -134,7 +145,7 @@ const EnumSelector: React.FC<{
       }
     };
     loadOptions();
-  }, [field.options]);
+  }, [field.options, filterValue]);
 
   const selectedValues = isMulti ? (Array.isArray(value) ? value : []) : (value ? [value] : []);
   const displayMode = (field.options as any)?.displayMode || field.displayMode || 'dropdown';
@@ -1107,18 +1118,19 @@ const DynamicForm: React.FC<DynamicFormProps> = ({
                 const showBarcode = field.barcode_enabled || isCustomerField;
                 return (
                   <div className="relative">
-                    <EnumSelector 
-                      field={field} 
-                      value={formData[field.fieldKey] ?? ''} 
-                      onChange={(val) => handleChange(field.fieldKey, val)} 
-                      readOnly={isFieldReadOnly} 
-                      isMulti={field.fieldType === FieldType.ENUM_LIST || field.fieldType === FieldType.MULTI_SELECT} 
-                      commonClasses={`${commonClasses} ${showBarcode ? 'pl-12' : ''}`} 
-                      openDropdown={openDropdown} 
-                      setOpenDropdown={setOpenDropdown} 
-                      dropdownRef={dropdownRef} 
-                      selectSearch={selectSearch} 
-                      setSelectSearch={setSelectSearch} 
+                    <EnumSelector
+                      field={field}
+                      value={formData[field.fieldKey] ?? ''}
+                      onChange={(val) => handleChange(field.fieldKey, val)}
+                      readOnly={isFieldReadOnly}
+                      isMulti={field.fieldType === FieldType.ENUM_LIST || field.fieldType === FieldType.MULTI_SELECT}
+                      commonClasses={`${commonClasses} ${showBarcode ? 'pl-12' : ''}`}
+                      openDropdown={openDropdown}
+                      setOpenDropdown={setOpenDropdown}
+                      dropdownRef={dropdownRef}
+                      selectSearch={selectSearch}
+                      setSelectSearch={setSelectSearch}
+                      formData={formData}
                     />
                     <ScanButton />
                   </div>
