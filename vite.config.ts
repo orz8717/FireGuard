@@ -11,7 +11,7 @@ export default defineConfig(({ mode }) => {
       throw new Error(
         '[vite.config] VITE_SUPABASE_SERVICE_ROLE_KEY must not exist. ' +
         'The service_role key is server-only. ' +
-        'Rename it to SUPABASE_SERVICE_ROLE_KEY and use it only in netlify/functions/.'
+        'Rename it to SUPABASE_SERVICE_ROLE_KEY and use it only in api/admin-proxy.ts (Vercel serverless).'
       );
     }
 
