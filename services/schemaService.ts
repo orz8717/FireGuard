@@ -54,29 +54,40 @@ export class SchemaService {
     return schema;
   }
 
+  private static _metadataCache: TableMetadata[] | null = null;
+  private static _metadataPromise: Promise<TableMetadata[]> | null = null;
+
+  static invalidateCache() {
+    this._metadataCache = null;
+    this._metadataPromise = null;
+  }
+
   /**
    * Fetches raw schema metadata including data types.
+   * Results are cached in memory for the lifetime of the page.
    */
   static async getRawMetadata(): Promise<TableMetadata[]> {
-    try {
-      console.log('[SchemaService] Fetching schema metadata via RPC...');
-      const { data, error } = await supabase.rpc('get_schema_metadata');
+    if (this._metadataCache) return this._metadataCache;
 
-      if (error) {
-        console.warn('[SchemaService] RPC failed, falling back to whitelist:', error.message);
-        return this.getFallbackRawSchema();
-      }
-
-      if (!data || !Array.isArray(data)) {
-        console.warn('[SchemaService] RPC returned no data, falling back to whitelist');
-        return this.getFallbackRawSchema();
-      }
-
-      return data as TableMetadata[];
-    } catch (err) {
-      console.error('[SchemaService] Unexpected error fetching schema:', err);
-      return this.getFallbackRawSchema();
+    // De-duplicate concurrent calls — only one RPC in flight at a time
+    if (!this._metadataPromise) {
+      this._metadataPromise = (async () => {
+        try {
+          const { data, error } = await supabase.rpc('get_schema_metadata');
+          if (error || !data || !Array.isArray(data)) {
+            return this.getFallbackRawSchema();
+          }
+          this._metadataCache = data as TableMetadata[];
+          return this._metadataCache;
+        } catch {
+          return this.getFallbackRawSchema();
+        } finally {
+          this._metadataPromise = null;
+        }
+      })();
     }
+
+    return this._metadataPromise;
   }
 
   private static getFallbackRawSchema(): TableMetadata[] {
