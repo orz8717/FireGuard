@@ -404,16 +404,33 @@ class DBService {
   async getTableColumns(tableName: string): Promise<{ column_name: string; data_type: string; ordinal_position: number; is_updatable: string }[]> {
     if (this._columnCache.has(tableName)) return this._columnCache.get(tableName)!;
 
-    // 1. Admin proxy — has service_role, can read information_schema for any table
+    const actualName = this.getActualTableName(tableName);
+
+    // 1. Admin proxy — service_role can read information_schema for any table
     try {
-      const { data, error } = await getSupabaseAdmin().rpc('get_table_columns', { p_table_name: tableName });
+      const { data, error } = await getSupabaseAdmin().rpc('get_table_columns', { p_table_name: actualName });
       if (!error && data && data.length > 0) {
         this._columnCache.set(tableName, data);
         return data;
       }
     } catch {}
 
-    // 2. Fallback: SchemaService (anon client, may lack dynamic columns)
+    // 2. Infer columns from a live row — works for dynamic tables like Panel
+    try {
+      const { data: rows } = await supabase.from(actualName).select('*').limit(1);
+      if (rows && rows.length > 0) {
+        const cols = Object.keys(rows[0]).map((col, i) => ({
+          column_name: col,
+          data_type: 'text',
+          ordinal_position: i,
+          is_updatable: 'YES',
+        }));
+        this._columnCache.set(tableName, cols);
+        return cols;
+      }
+    } catch {}
+
+    // 3. Fallback: SchemaService metadata (core columns only)
     try {
       const metadata = await SchemaService.getRawMetadata();
       const cols = metadata
