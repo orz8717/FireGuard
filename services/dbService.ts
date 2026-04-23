@@ -430,6 +430,21 @@ class DBService {
       }
     } catch {}
 
+    // 2b. Admin proxy row fetch — service_role bypasses RLS, infer columns from returned row
+    try {
+      const { data: adminRows } = await getSupabaseAdmin().from(actualName).select('*').limit(1);
+      if (adminRows && adminRows.length > 0) {
+        const cols = Object.keys(adminRows[0]).map((col, i) => ({
+          column_name: col,
+          data_type: 'text',
+          ordinal_position: i,
+          is_updatable: 'YES',
+        }));
+        this._columnCache.set(tableName, cols);
+        return cols;
+      }
+    } catch {}
+
     // 3. Fallback: SchemaService metadata (core columns only)
     try {
       const metadata = await SchemaService.getRawMetadata();
