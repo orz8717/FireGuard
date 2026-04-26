@@ -94,17 +94,38 @@ const auth = {
   },
 
   onAuthStateChange(callback: (event: string, session: any) => void) {
-    const c = clerk();
-    const handler = ({ session }: any) => {
-      if (session) {
-        callback('SIGNED_IN', { access_token: 'pending' });
+    const handler = async ({ session: clerkSession }: any) => {
+      if (clerkSession) {
+        // Use the user ID already saved in localStorage (set by authService.login)
+        // so App.tsx receives the DB UUID, not the Clerk user ID.
+        try {
+          const saved = localStorage.getItem('fireguard_session');
+          const savedUser = saved ? JSON.parse(saved) : null;
+          if (savedUser?.id) {
+            const token = (await clerkSession.getToken?.()) ?? 'pending';
+            callback('INITIAL_SESSION', { access_token: token, user: { id: savedUser.id } });
+          }
+        } catch {}
       } else {
         callback('SIGNED_OUT', null);
       }
     };
-    c?.addListener(handler);
+
+    // Register once Clerk is available; retry every 200 ms while it loads.
+    let removeFn: (() => void) | null = null;
+    const tryRegister = () => {
+      const c = clerk();
+      if (c) {
+        c.addListener(handler);
+        removeFn = () => c.removeListener(handler);
+      } else {
+        setTimeout(tryRegister, 200);
+      }
+    };
+    tryRegister();
+
     return {
-      data: { subscription: { unsubscribe: () => c?.removeListener(handler) } },
+      data: { subscription: { unsubscribe: () => removeFn?.() } },
     };
   },
 };
