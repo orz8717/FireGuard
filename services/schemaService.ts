@@ -1,4 +1,4 @@
-import { supabase } from '../src/lib/supabase';
+import { supabase } from './supabaseClient';
 
 export interface TableMetadata {
   table_name: string;

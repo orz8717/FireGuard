@@ -1,146 +1,82 @@
-
 import { useEffect, useRef } from 'react';
-import { supabase, getSupabaseAdmin } from '../src/lib/supabase';
+import { getSupabaseAdmin } from '../src/lib/supabase';
 import { dbService } from '../services/dbService';
+
+// Neon does not support realtime subscriptions.
+// We poll for recent changes (rows updated in the last 30 s) every 10 s.
+const POLL_INTERVAL_MS = 10_000;
+const LOOKBACK_MS = 30_000;
 
 export const useBotRealtime = () => {
   const processedIds = useRef(new Set<string>());
 
   useEffect(() => {
-    let activeChannels: any[] = [];
+    let mounted = true;
 
-    const initRealtime = async () => {
+    const poll = async () => {
+      if (!mounted) return;
+
       try {
-        // 1. Fetch all active bots and normalize them
         const botsData = await dbService.getBots();
-        const activeBots = botsData.filter((b: any) => b.is_active).map((b: any) => {
-          const eventConfig = b.action_config?.event || { 
-            type: b.event_type, 
-            targetTable: b.table_name, 
-            conditionFormula: b.condition_formula, 
-            bypassSecurity: false,
-            dataChangeType: b.event_type,
-            scheduleType: b.schedule_type
-          };
-          return { ...b, eventConfig };
-        });
-
-        // 2. Filter bots that are configured for Realtime (FOR_EACH_ROW)
-        const realtimeBots = activeBots.filter((bot: any) => 
-          bot.eventConfig.scheduleType === 'FOR_EACH_ROW' || bot.schedule_type === 'FOR_EACH_ROW'
+        const realtimeBots = botsData.filter((b: any) =>
+          b.is_active &&
+          (b.schedule_type === 'FOR_EACH_ROW' ||
+            b.action_config?.event?.scheduleType === 'FOR_EACH_ROW')
         );
 
-        if (realtimeBots.length === 0) {
-          console.log('[BotRealtime] No bots configured for FOR_EACH_ROW listening.');
-          return;
-        }
+        if (!realtimeBots.length) return;
 
-        // 3. Group bots by table to optimize subscriptions
         const tableMap: Record<string, any[]> = {};
         realtimeBots.forEach((bot: any) => {
-          const table = bot.eventConfig.targetTable || bot.table_name;
+          const table = bot.action_config?.event?.targetTable || bot.table_name;
           if (!table) return;
           if (!tableMap[table]) tableMap[table] = [];
           tableMap[table].push(bot);
         });
 
-        // 4. Create a channel for each table (Listening to all changes)
-        Object.entries(tableMap).forEach(([tableName, bots]) => {
-          console.log(`[BotRealtime] Subscribing to INSERT & UPDATE events on table: ${tableName}`);
-          
-          const channel = supabase
-            .channel(`bot-realtime-${tableName}`)
-            .on(
-              'postgres_changes',
-              { event: '*', schema: 'public', table: tableName },
-              async (payload) => {
-                const event = payload.eventType; // 'INSERT', 'UPDATE', 'DELETE'
-                const rowId = (event === 'DELETE') 
-                  ? (payload.old?.ROWID || payload.old?.id) 
-                  : (payload.new?.ROWID || payload.new?.id);
+        const since = new Date(Date.now() - LOOKBACK_MS).toISOString();
 
-                if (!rowId) {
-                  console.warn(`[BotRealtime] Received ${event} on ${tableName} but no ROWID/id found.`);
-                  return;
-                }
+        for (const [tableName, bots] of Object.entries(tableMap)) {
+          // Fetch rows modified in the last LOOKBACK_MS window
+          const { data: rows } = await getSupabaseAdmin()
+            .from(tableName)
+            .select('*')
+            .order('updated_at', { ascending: false })
+            .limit(50) as any;
 
-                console.log(`[BotRealtime] ${event} detected in ${tableName} (ID: ${rowId}). Evaluating bots...`);
+          if (!rows?.length) continue;
 
-                let fullRecord = null;
-                if (event !== 'DELETE') {
-                  // Fetch full record to ensure we have all columns (including JSONB fields)
-                  const { data, error: fetchError } = await getSupabaseAdmin()
-                    .from(tableName)
-                    .select('*')
-                    .eq('ROWID', rowId)
-                    .maybeSingle();
+          const recent = rows.filter((r: any) => r.updated_at && r.updated_at > since);
 
-                  if (fetchError || !data) {
-                    console.error(`[BotRealtime] Failed to fetch full record for ${rowId} in ${tableName}:`, fetchError);
-                    return;
-                  }
-                  fullRecord = data;
-                } else {
-                  fullRecord = payload.old; // Use old data for DELETE
-                }
+          for (const row of recent) {
+            const rowId = row.ROWID || row.id;
+            if (!rowId) continue;
 
-                  // Determine logicalEvent once per payload (as requested for precise separation)
-                  let logicalEvent: 'ADDS' | 'UPDATES' | 'DELETES' | null = null;
+            const createdAt = row.created_at ? new Date(row.created_at).getTime() : 0;
+            const updatedAt = row.updated_at ? new Date(row.updated_at).getTime() : 0;
+            const isNew = Math.abs(updatedAt - createdAt) < 10_000;
 
-                  if (event === 'INSERT') {
-                    logicalEvent = 'ADDS';
-                  } else if (event === 'UPDATE') {
-                    // Fetch row data from Supabase (including created_at and updated_at)
-                    const createdAt = fullRecord?.created_at ? new Date(fullRecord.created_at).getTime() : 0;
-                    const updatedAt = fullRecord?.updated_at ? new Date(fullRecord.updated_at).getTime() : 0;
-                    
-                    // Determine the "Logical" Event:
-                    // If created_at and updated_at are the same (or within 10 seconds), define the event as ADDS.
-                    // This handles UPSERTs that are logically new records.
-                    const isNewRecord = Math.abs(updatedAt - createdAt) < 10000; 
+            let logicalEvent: 'ADDS' | 'UPDATES' | null = isNew ? 'ADDS' : 'UPDATES';
 
-                    if (isNewRecord && !processedIds.current.has(rowId)) {
-                      logicalEvent = 'ADDS';
-                    } else {
-                      logicalEvent = 'UPDATES';
-                    }
-                  } else if (event === 'DELETE') {
-                    logicalEvent = 'DELETES';
-                  }
+            if (logicalEvent === 'ADDS') {
+              if (processedIds.current.has(rowId)) continue;
+              processedIds.current.add(rowId);
+            }
 
-                  if (logicalEvent) {
-                    console.log(`[Automation] Logical Event determined: ${logicalEvent} for record: ${rowId}`);
-                  }
-
-                  // Prevent Duplicates: Use a useRef Set to track ROWIDs that have already triggered an ADDS event
-                  if (logicalEvent === 'ADDS') {
-                    if (processedIds.current.has(rowId)) {
-                      console.log(`[BotRealtime] Skipping duplicate ADDS trigger for ${rowId}`);
-                      return;
-                    }
-                    processedIds.current.add(rowId);
-                  }
-
-                // 4. Trigger Bots via dbService to ensure consistent logic
-                // We pass the logicalEvent (ADDS/UPDATES) to triggerBots so it can correctly match bots
-                console.log(`[BotRealtime] Triggering bots for table ${tableName} with logicalEvent: ${logicalEvent}`);
-                await dbService.triggerBots(tableName, rowId, logicalEvent);
-              }
-            )
-            .subscribe();
-
-          activeChannels.push(channel);
-        });
+            await dbService.triggerBots(tableName, rowId, logicalEvent);
+          }
+        }
       } catch (err) {
-        console.error('[BotRealtime] Initialization error:', err);
+        console.error('[BotRealtime] Poll error:', err);
       }
     };
 
-    initRealtime();
+    const intervalId = setInterval(poll, POLL_INTERVAL_MS);
+    poll();
 
     return () => {
-      console.log('[BotRealtime] Cleaning up subscriptions...');
-      activeChannels.forEach(ch => supabase.removeChannel(ch));
+      mounted = false;
+      clearInterval(intervalId);
     };
   }, []);
 };

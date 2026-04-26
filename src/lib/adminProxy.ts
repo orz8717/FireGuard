@@ -1,18 +1,12 @@
-/**
- * Client-side proxy for Supabase admin operations.
- *
- * All calls are routed to /.netlify/functions/admin-proxy, which executes them
- * server-side with the SUPABASE_SERVICE_ROLE_KEY. The service-role key is
- * therefore never present in the browser bundle.
- */
-
-import { supabase } from './supabase';
-
 const PROXY_URL = '/api/admin-proxy';
 
 async function getToken(): Promise<string | null> {
-  const { data: { session } } = await supabase.auth.getSession();
-  return session?.access_token ?? null;
+  try {
+    const win = window as any;
+    return (await win.Clerk?.session?.getToken()) ?? null;
+  } catch {
+    return null;
+  }
 }
 
 async function callProxy(body: Record<string, unknown>): Promise<{ data: any; error: any }> {
@@ -40,7 +34,7 @@ async function callProxy(body: Record<string, unknown>): Promise<{ data: any; er
   }
 }
 
-// ── Query builder ────────────────────────────────────────────────────────────
+// ── Query builder ─────────────────────────────────────────────────────────────
 
 type FilterDef =
   | { type: 'eq'; col: string; val: unknown }
@@ -60,12 +54,13 @@ interface BuilderSpec {
   limit?: number;
   single: boolean;
   maybeSingle: boolean;
+  onConflict?: string;
 }
 
 class FromBuilder {
   private s: BuilderSpec;
 
-  constructor(table: string, method: BuilderSpec['method'], data?: unknown) {
+  constructor(table: string, method: BuilderSpec['method'], data?: unknown, onConflict?: string) {
     this.s = {
       action: 'from',
       table,
@@ -75,11 +70,12 @@ class FromBuilder {
       filters: [],
       single: false,
       maybeSingle: false,
+      onConflict,
     };
   }
 
   private clone(): FromBuilder {
-    const b = new FromBuilder(this.s.table, this.s.method, this.s.data);
+    const b = new FromBuilder(this.s.table, this.s.method, this.s.data, this.s.onConflict);
     b.s = { ...this.s, filters: [...this.s.filters] };
     return b;
   }
@@ -150,21 +146,22 @@ class FromBuilder {
   }
 }
 
-// ── Public adminProxy object ─────────────────────────────────────────────────
+// ── Public adminProxy object ──────────────────────────────────────────────────
 
 export const adminProxy = {
   from(table: string) {
     return {
       select: (cols = '*') => new FromBuilder(table, 'select').select(cols),
       insert: (data: unknown) => new FromBuilder(table, 'insert', data),
-      upsert: (data: unknown) => new FromBuilder(table, 'upsert', data),
+      upsert: (data: unknown, opts?: { onConflict?: string }) =>
+        new FromBuilder(table, 'upsert', data, opts?.onConflict),
       update: (data: unknown) => new FromBuilder(table, 'update', data),
       delete: () => new FromBuilder(table, 'delete'),
     };
   },
 
   rpc(fnName: string, args?: Record<string, unknown>): Promise<{ data: any; error: any }> {
-    return callProxy({ action: 'rpc', fnName, fnArgs: args });
+    return callProxy({ action: 'rpc', fnName, fnArgs: args ?? {} });
   },
 
   auth: {

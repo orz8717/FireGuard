@@ -1,22 +1,89 @@
-import { createClient } from '@supabase/supabase-js';
+import { neon } from '@neondatabase/serverless';
+import { verifyToken, createClerkClient } from '@clerk/backend';
 
-const supabaseUrl = process.env.VITE_SUPABASE_URL!;
-const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+const sql = neon(process.env.DATABASE_URL!);
+const clerk = createClerkClient({ secretKey: process.env.CLERK_SECRET_KEY! });
 
-const adminClient = createClient(supabaseUrl, serviceRoleKey, {
-  auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
-});
+// ── Safe identifier quoting ───────────────────────────────────────────────────
+function q(name: string): string {
+  return `"${name.replace(/"/g, '""')}"`;
+}
+
+// ── JWT verification (Clerk) ──────────────────────────────────────────────────
+async function verifyUser(token: string): Promise<string | null> {
+  try {
+    const payload = await verifyToken(token, { secretKey: process.env.CLERK_SECRET_KEY! });
+    return payload.sub ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// ── Filter builder ────────────────────────────────────────────────────────────
+type FilterDef =
+  | { type: 'eq'; col: string; val: unknown }
+  | { type: 'in'; col: string; val: unknown[] }
+  | { type: 'or'; val: string };
+
+function parseOrFilter(filterStr: string, params: unknown[]): string {
+  const parts = filterStr.split(',').map(part => {
+    const first = part.indexOf('.');
+    const second = part.indexOf('.', first + 1);
+    if (first === -1 || second === -1) return '1=1';
+    const col = part.slice(0, first);
+    const op = part.slice(first + 1, second);
+    const val = part.slice(second + 1);
+    switch (op) {
+      case 'eq':    params.push(val); return `${q(col)} = $${params.length}`;
+      case 'neq':   params.push(val); return `${q(col)} != $${params.length}`;
+      case 'ilike': params.push(val); return `${q(col)} ILIKE $${params.length}`;
+      case 'like':  params.push(val); return `${q(col)} LIKE $${params.length}`;
+      case 'is':    return val === 'null' ? `${q(col)} IS NULL` : `${q(col)} IS NOT NULL`;
+      default:      params.push(val); return `${q(col)} = $${params.length}`;
+    }
+  });
+  return `(${parts.join(' OR ')})`;
+}
+
+function buildWhere(filters: FilterDef[], params: unknown[]): string {
+  if (!filters.length) return '';
+  const conditions = filters.map(f => {
+    if (f.type === 'eq') {
+      params.push(f.val);
+      return `${q(f.col)} = $${params.length}`;
+    }
+    if (f.type === 'in') {
+      const placeholders = (f.val as unknown[]).map(v => {
+        params.push(v); return `$${params.length}`;
+      }).join(', ');
+      return `${q(f.col)} IN (${placeholders})`;
+    }
+    if (f.type === 'or') {
+      return parseOrFilter(f.val as string, params);
+    }
+    return '1=1';
+  });
+  return `WHERE ${conditions.join(' AND ')}`;
+}
+
+function buildColStr(columns: string): string {
+  if (columns === '*') return '*';
+  return columns.split(',').map(c => {
+    const t = c.trim();
+    if (t === '*') return '*';
+    if (t.includes(':')) {
+      const [col, alias] = t.split(':');
+      return `${q(col.trim())} AS ${q(alias.trim())}`;
+    }
+    return q(t);
+  }).join(', ');
+}
 
 const ALLOWED_RPCS = new Set([
-  'get_public_tables',
-  'get_table_columns',
-  'check_table_exists',
-  'create_dynamic_table',
-  'add_column_to_table',
-  'sync_table_columns',
-  'reload_schema_cache',
-  'get_triggers',
-  'get_schema_definition',
+  'get_public_tables', 'get_table_columns', 'check_table_exists',
+  'create_dynamic_table', 'add_column_to_table', 'sync_table_columns',
+  'reload_schema_cache', 'get_triggers', 'get_schema_definition',
+  'get_schema_metadata',
 ]);
 
 export default async function handler(req: any, res: any) {
@@ -24,45 +91,82 @@ export default async function handler(req: any, res: any) {
     return res.status(405).json({ data: null, error: { message: 'Method not allowed' } });
   }
 
-  const auth: string = req.headers['authorization'] ?? '';
-  const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
-  if (!token) {
-    return res.status(401).json({ data: null, error: { message: 'Unauthorized' } });
-  }
+  const authHeader: string = req.headers['authorization'] ?? '';
+  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+  if (!token) return res.status(401).json({ data: null, error: { message: 'Unauthorized' } });
 
-  const { data: { user }, error: authErr } = await adminClient.auth.getUser(token);
-  if (authErr || !user) {
-    return res.status(401).json({ data: null, error: { message: 'Invalid token' } });
-  }
+  const userId = await verifyUser(token);
+  if (!userId) return res.status(401).json({ data: null, error: { message: 'Invalid token' } });
 
   const body = req.body ?? {};
   const { action } = body;
 
   try {
-    // ── RPC calls ──────────────────────────────────────────────────────────
+    // ── RPC ───────────────────────────────────────────────────────────────────
     if (action === 'rpc') {
-      const { fnName, fnArgs } = body;
+      const { fnName, fnArgs = {} } = body;
       if (!ALLOWED_RPCS.has(fnName)) {
         return res.status(403).json({ data: null, error: { message: `RPC "${fnName}" not allowed` } });
       }
-      const result = await adminClient.rpc(fnName, fnArgs ?? {});
-      return res.status(200).json(result);
+      const params: unknown[] = [];
+      const argEntries = Object.entries(fnArgs as Record<string, unknown>);
+      let queryStr: string;
+      if (argEntries.length === 0) {
+        queryStr = `SELECT * FROM ${fnName}()`;
+      } else {
+        const argStr = argEntries.map(([k, v]) => {
+          params.push(v);
+          return `${k} => $${params.length}`;
+        }).join(', ');
+        queryStr = `SELECT * FROM ${fnName}(${argStr})`;
+      }
+      const rows = await sql(queryStr, params);
+      return res.status(200).json({ data: rows, error: null });
     }
 
-    // ── Auth admin ─────────────────────────────────────────────────────────
+    // ── List users ─────────────────────────────────────────────────────────
     if (action === 'listUsers') {
-      const result = await adminClient.auth.admin.listUsers();
-      return res.status(200).json(result);
+      const rows = await sql`SELECT * FROM "users" ORDER BY created_at DESC`;
+      return res.status(200).json({ data: { users: rows }, error: null });
     }
 
+    // ── Update user ────────────────────────────────────────────────────────
     if (action === 'updateUserById') {
-      const { userId, userAttrs } = body;
-      if (!userId) return res.status(400).json({ data: null, error: { message: 'userId required' } });
-      const result = await adminClient.auth.admin.updateUserById(userId, userAttrs ?? {});
-      return res.status(200).json(result);
+      const { userId: targetId, userAttrs = {} } = body;
+
+      // email_confirm → no-op (Clerk handles verification)
+      if ('email_confirm' in userAttrs && Object.keys(userAttrs).length === 1) {
+        return res.status(200).json({ data: { user: { id: targetId } }, error: null });
+      }
+
+      // password → update via Clerk admin API
+      if (userAttrs.password) {
+        const userRows = await sql(`SELECT email FROM "users" WHERE id = $1`, [targetId]);
+        if (userRows.length) {
+          const list = await clerk.users.getUserList({ emailAddress: [userRows[0].email] });
+          if (list.data.length) {
+            await clerk.users.updateUser(list.data[0].id, { password: userAttrs.password });
+          }
+        }
+      }
+
+      // Other attrs → SQL UPDATE on users table
+      const updateEntries = Object.entries(userAttrs as Record<string, unknown>)
+        .filter(([k]) => !['email_confirm', 'password'].includes(k));
+      if (updateEntries.length > 0) {
+        const params: unknown[] = [];
+        const setClauses = updateEntries.map(([k, v]) => {
+          params.push(v);
+          return `${q(k)} = $${params.length}`;
+        }).join(', ');
+        params.push(targetId);
+        await sql(`UPDATE "users" SET ${setClauses} WHERE id = $${params.length}`, params);
+      }
+
+      return res.status(200).json({ data: { user: { id: targetId } }, error: null });
     }
 
-    // ── Table (from) operations ────────────────────────────────────────────
+    // ── Table operations ───────────────────────────────────────────────────
     if (action === 'from') {
       const {
         table, method,
@@ -72,45 +176,98 @@ export default async function handler(req: any, res: any) {
         range: rangeVal,
         order: orderVal,
         limit: limitVal,
-        single, maybeSingle,
+        single: isSingle,
+        maybeSingle: isMaybeSingle,
+        onConflict = 'id',
       } = body;
 
-      let query: any;
+      if (!table || typeof table !== 'string') {
+        return res.status(400).json({ data: null, error: { message: 'Invalid table name' } });
+      }
 
+      const params: unknown[] = [];
+
+      // SELECT ────────────────────────────────────────────────────────────────
       if (method === 'select') {
-        query = adminClient.from(table).select(columns);
-      } else if (method === 'insert') {
-        query = adminClient.from(table).insert(payload);
-        if (selectAfter !== undefined) query = query.select(selectAfter);
-      } else if (method === 'upsert') {
-        query = adminClient.from(table).upsert(payload);
-        if (selectAfter !== undefined) query = query.select(selectAfter);
-      } else if (method === 'update') {
-        query = adminClient.from(table).update(payload);
-      } else if (method === 'delete') {
-        query = adminClient.from(table).delete();
-      } else {
-        return res.status(400).json({ data: null, error: { message: `Unknown method: ${method}` } });
+        let queryStr = `SELECT ${buildColStr(columns)} FROM ${q(table)}`;
+        const w = buildWhere(filters, params);
+        if (w) queryStr += ' ' + w;
+        if (orderVal) queryStr += ` ORDER BY ${q(orderVal.col)} ${orderVal.ascending ? 'ASC' : 'DESC'}`;
+        if (limitVal !== undefined) { params.push(limitVal); queryStr += ` LIMIT $${params.length}`; }
+        if (rangeVal) { params.push(rangeVal[0]); queryStr += ` OFFSET $${params.length}`; }
+
+        const rows = await sql(queryStr, params);
+        if (isSingle) {
+          if (!rows.length) return res.status(200).json({ data: null, error: { code: 'PGRST116', message: 'No rows found' } });
+          return res.status(200).json({ data: rows[0], error: null });
+        }
+        if (isMaybeSingle) return res.status(200).json({ data: rows[0] ?? null, error: null });
+        return res.status(200).json({ data: rows, error: null });
       }
 
-      for (const f of filters) {
-        if (f.type === 'eq')  query = query.eq(f.col, f.val);
-        else if (f.type === 'in')  query = query.in(f.col, f.val);
-        else if (f.type === 'or')  query = query.or(f.val);
+      // INSERT ────────────────────────────────────────────────────────────────
+      if (method === 'insert') {
+        const records: Record<string, unknown>[] = Array.isArray(payload) ? payload : [payload];
+        if (!records.length) return res.status(200).json({ data: [], error: null });
+        const cols = Object.keys(records[0]).filter(k => records[0][k] !== undefined);
+        const colList = cols.map(q).join(', ');
+        const valueSets = records.map(r => {
+          const ph = cols.map(c => { params.push(r[c] ?? null); return `$${params.length}`; }).join(', ');
+          return `(${ph})`;
+        }).join(', ');
+        const ret = selectAfter !== undefined ? ` RETURNING ${selectAfter === '*' ? '*' : buildColStr(selectAfter)}` : '';
+        const rows = await sql(`INSERT INTO ${q(table)} (${colList}) VALUES ${valueSets}${ret}`, params);
+        return res.status(200).json({ data: selectAfter !== undefined ? (isSingle ? rows[0] ?? null : rows) : null, error: null });
       }
 
-      if ((method === 'update' || method === 'delete') && selectAfter !== undefined) {
-        query = query.select(selectAfter);
+      // UPSERT ────────────────────────────────────────────────────────────────
+      if (method === 'upsert') {
+        const records: Record<string, unknown>[] = Array.isArray(payload) ? payload : [payload];
+        if (!records.length) return res.status(200).json({ data: [], error: null });
+        const cols = Object.keys(records[0]).filter(k => records[0][k] !== undefined);
+        const colList = cols.map(q).join(', ');
+        const valueSets = records.map(r => {
+          const ph = cols.map(c => { params.push(r[c] ?? null); return `$${params.length}`; }).join(', ');
+          return `(${ph})`;
+        }).join(', ');
+        const updateCols = cols.filter(c => c !== onConflict);
+        const updateSet = updateCols.length
+          ? updateCols.map(c => `${q(c)} = EXCLUDED.${q(c)}`).join(', ')
+          : `${q(onConflict)} = EXCLUDED.${q(onConflict)}`;
+        const ret = selectAfter !== undefined ? ` RETURNING ${selectAfter === '*' ? '*' : buildColStr(selectAfter)}` : '';
+        const rows = await sql(
+          `INSERT INTO ${q(table)} (${colList}) VALUES ${valueSets} ON CONFLICT (${q(onConflict)}) DO UPDATE SET ${updateSet}${ret}`,
+          params
+        );
+        return res.status(200).json({ data: selectAfter !== undefined ? rows : null, error: null });
       }
 
-      if (rangeVal)            query = query.range(rangeVal[0], rangeVal[1]);
-      if (orderVal)            query = query.order(orderVal.col, { ascending: orderVal.ascending ?? true });
-      if (limitVal !== undefined) query = query.limit(limitVal);
-      if (single)              query = query.single();
-      else if (maybeSingle)    query = query.maybeSingle();
+      // UPDATE ────────────────────────────────────────────────────────────────
+      if (method === 'update') {
+        const record = payload as Record<string, unknown>;
+        const cols = Object.keys(record).filter(k => record[k] !== undefined);
+        if (!cols.length) return res.status(400).json({ data: null, error: { message: 'No fields to update' } });
+        const setClauses = cols.map(c => { params.push(record[c] ?? null); return `${q(c)} = $${params.length}`; }).join(', ');
+        let queryStr = `UPDATE ${q(table)} SET ${setClauses}`;
+        const w = buildWhere(filters, params);
+        if (w) queryStr += ' ' + w;
+        const ret = selectAfter !== undefined ? ` RETURNING ${selectAfter === '*' ? '*' : buildColStr(selectAfter)}` : '';
+        queryStr += ret;
+        const rows = await sql(queryStr, params);
+        return res.status(200).json({ data: selectAfter !== undefined ? (isSingle ? rows[0] ?? null : rows) : null, error: null });
+      }
 
-      const result = await query;
-      return res.status(200).json(result);
+      // DELETE ────────────────────────────────────────────────────────────────
+      if (method === 'delete') {
+        let queryStr = `DELETE FROM ${q(table)}`;
+        const w = buildWhere(filters, params);
+        if (w) queryStr += ' ' + w;
+        if (selectAfter !== undefined) queryStr += ' RETURNING *';
+        const rows = await sql(queryStr, params);
+        return res.status(200).json({ data: selectAfter !== undefined ? rows : null, error: null });
+      }
+
+      return res.status(400).json({ data: null, error: { message: `Unknown method: ${method}` } });
     }
 
     return res.status(400).json({ data: null, error: { message: `Unknown action: ${action}` } });

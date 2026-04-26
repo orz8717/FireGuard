@@ -1,44 +1,34 @@
-
 import { User } from '../types';
-import { dbService } from './dbService';
-import { supabase, supabaseAdmin, supabaseAnon } from './supabaseClient';
+import { supabase, getSupabaseAdmin } from './supabaseClient';
 
 class AuthService {
   private currentUser: User | null = null;
 
   constructor() {
-    // Listen for auth changes to handle token expiration or refresh errors
     supabase.auth.onAuthStateChange((event, session) => {
-      console.log('Auth state change:', event, !!session);
-      
       if (event === 'SIGNED_OUT' || (event === 'TOKEN_REFRESHED' && !session)) {
         this.currentUser = null;
         localStorage.removeItem('fireguard_session');
-        // We might want to reload or notify the UI, but App.tsx handles state
       }
-      
-      // If we get an error like "Invalid Refresh Token", Supabase usually emits SIGNED_OUT
     });
   }
 
   async login(email: string, password?: string): Promise<User | null> {
     if (!password) return null;
 
-    const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
+    const { data: authData, error: authError } = await supabase.auth.signInWithPassword({ email, password });
 
     if (authError || !authData.user) {
       console.error('Login failed:', authError);
       return null;
     }
 
+    // Look up app profile by email (Clerk user ID != DB UUID)
     const { data: userData, error: userError } = await supabase
       .from('users')
       .select('*')
-      .eq('id', authData.user.id)
-      .single();
+      .eq('email', email)
+      .maybeSingle();
 
     if (userError || !userData || !userData.is_active) {
       console.error('Failed to fetch user profile or user is inactive:', userError);
@@ -53,7 +43,7 @@ class AuthService {
       role: userData.role,
       isActive: userData.is_active,
       createdAt: userData.created_at,
-      updatedAt: userData.updated_at
+      updatedAt: userData.updated_at,
     };
 
     this.currentUser = user;
@@ -67,7 +57,7 @@ class AuthService {
         .from('users')
         .select('*')
         .eq('id', userId)
-        .single();
+        .maybeSingle();
 
       if (userError || !userData || !userData.is_active) {
         console.error('Failed to fetch user profile or user is inactive:', userError);
@@ -82,7 +72,7 @@ class AuthService {
         role: userData.role,
         isActive: userData.is_active,
         createdAt: userData.created_at,
-        updatedAt: userData.updated_at
+        updatedAt: userData.updated_at,
       };
 
       this.currentUser = user;
@@ -95,63 +85,42 @@ class AuthService {
 
   async signUp(email: string, password: string, name: string, phone: string): Promise<{ user: any; error: any }> {
     try {
-      // 0. Check if email already exists in public.users
-      const { data: existingUser, error: checkError } = await supabase
+      // Check if email already exists
+      const { data: existingUser } = await supabase
         .from('users')
         .select('id')
         .eq('email', email)
         .maybeSingle();
 
-      if (existingUser) {
-        throw new Error('כתובת האימייל כבר קיימת במערכת');
-      }
+      if (existingUser) throw new Error('כתובת האימייל כבר קיימת במערכת');
 
-      // 1. Authentication: Create user in auth.users using non-persisting client
-      const { data: authData, error: authError } = await supabaseAnon.auth.signUp({
-        email,
-        password,
-      });
-
+      // Create Clerk user
+      const { data: authData, error: authError } = await supabase.auth.signUp({ email, password });
       if (authError) throw authError;
       if (!authData.user) throw new Error('Signup failed: No user data returned');
 
-      // 2. Profile Creation: Create or update entry in public.users
-      // 3. Data Synchronization: Link using user ID
-      const { error: profileError } = await supabase
-        .from('users')
-        .upsert([
-          {
-            id: authData.user.id,
-            email,
-            name,
-            phone,
-            role: 'USER',
-            is_active: true,
-            updated_at: new Date().toISOString(),
-          },
-        ], { onConflict: 'id' });
+      // Insert profile into Neon users table (use a fresh UUID as the row ID)
+      const newId = crypto.randomUUID();
+      const { error: profileError } = await supabase.from('users').insert([{
+        id: newId,
+        email,
+        name,
+        phone,
+        role: 'USER',
+        is_active: true,
+        updated_at: new Date().toISOString(),
+        created_at: new Date().toISOString(),
+      }]);
 
       if (profileError) {
-        console.error('Profile creation failed:', profileError);
-        if (profileError.code === '23505' && profileError.message.includes('users_email_key')) {
+        if (profileError.message?.includes('users_email_key')) {
           throw new Error('כתובת האימייל כבר קיימת במערכת');
         }
         throw profileError;
       }
 
-      // 4. Auto-confirm email using Admin client (Bypass email verification)
-      try {
-        console.log('Auto-confirming email for:', authData.user.id);
-        await supabaseAdmin.auth.admin.updateUserById(authData.user.id, { 
-          email_confirm: true 
-        });
-      } catch (confirmError) {
-        console.warn('Could not auto-confirm email, user might need to verify manually:', confirmError);
-      }
-
       return { user: authData.user, error: null };
     } catch (error: any) {
-      // 4. Error Handling: Provide clear feedback
       console.error('Signup process error:', error);
       return { user: null, error: error.message || 'An unexpected error occurred during signup' };
     }
@@ -159,9 +128,7 @@ class AuthService {
 
   async updateUserPassword(userId: string, newPassword: string): Promise<{ data: any; error: any }> {
     try {
-      const { data, error } = await supabaseAdmin.auth.admin.updateUserById(userId, {
-        password: newPassword
-      });
+      const { data, error } = await getSupabaseAdmin().auth.admin.updateUserById(userId, { password: newPassword });
       return { data, error };
     } catch (error: any) {
       console.error('Update password error:', error);
