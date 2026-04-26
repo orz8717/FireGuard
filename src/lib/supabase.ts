@@ -18,14 +18,22 @@ const auth = {
       const c = clerk();
       if (!c) return { data: { user: null }, error: { message: 'Clerk not initialised' } };
 
-      const result = await c.client?.signIn?.create({
-        strategy: 'password',
-        identifier: email,
-        password,
-      });
+      let result: any;
+      try {
+        result = await c.client?.signIn?.create({
+          strategy: 'password',
+          identifier: email,
+          password,
+        });
+      } catch (clerkErr: any) {
+        console.error('[Auth] Clerk signIn error:', clerkErr);
+        const msg = clerkErr?.errors?.[0]?.longMessage || clerkErr?.errors?.[0]?.message || clerkErr?.message || 'Clerk sign-in failed';
+        return { data: { user: null }, error: { message: msg } };
+      }
 
       if (result?.status !== 'complete') {
-        return { data: { user: null }, error: { message: 'Sign-in failed' } };
+        console.error('[Auth] signIn status:', result?.status, result);
+        return { data: { user: null }, error: { message: `Sign-in status: ${result?.status}` } };
       }
 
       await c.setActive({ session: result.createdSessionId });
