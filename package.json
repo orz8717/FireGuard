@@ -15,6 +15,8 @@
     "@google/genai": "^1.42.0",
     "@neondatabase/serverless": "^1.1.0",
     "@tailwindcss/vite": "^4.2.1",
+    "@types/node": "^22.19.17",
+    "@vitejs/plugin-react": "^5.2.0",
     "clsx": "^2.1.1",
     "dexie": "^4.3.0",
     "dexie-react-hooks": "^4.2.0",
@@ -28,13 +30,9 @@
     "recharts": "^3.7.0",
     "tailwind-merge": "^3.5.0",
     "tailwindcss": "^4.2.1",
+    "typescript": "~5.8.2",
+    "vite": "^6.4.2",
     "workbox-window": "^7.4.0",
     "xlsx": "^0.18.5"
-  },
-  "devDependencies": {
-    "@types/node": "^22.19.17",
-    "@vitejs/plugin-react": "^5.2.0",
-    "typescript": "~5.8.2",
-    "vite": "^6.4.2"
   }
 }
