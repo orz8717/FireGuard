@@ -70,19 +70,21 @@ Auth was migrated away from Clerk. The custom system works as follows:
 Connection string is in `DATABASE_URL`. Uses `@neondatabase/serverless`.
 
 **CRITICAL — Neon SDK API:**
-The `neon()` function returns a tagged-template client. To use parameterised queries you must call `sql.query(queryStr, paramsArray)` which returns a `QueryResult` object — NOT an array.
+Use `Pool` from `@neondatabase/serverless` for parameterised queries — it is fully pg-compatible and has `.query(text, params)` that returns `{ rows: [...] }`.
 
-Both API files wrap this correctly:
+Both API files use this pattern:
 ```typescript
-const sql = neon(process.env.DATABASE_URL!);
+import { Pool } from '@neondatabase/serverless';
+
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
 async function query(queryStr: string, params: unknown[] = []): Promise<any[]> {
-  const result = await sql.query(queryStr, params);  // returns QueryResult
-  return result.rows;                                  // extract rows array
+  const result = await pool.query(queryStr, params);  // pg-compatible QueryResult
+  return result.rows;
 }
 ```
 
-**Never** write `sql(queryStr, params)` — that's the old tagged-template form and throws: `"This function can now be called only as a tagged-template function"`.
+**Never** use `neon()` with `.query()` — `neon()` returns a tagged-template function and `.query()` does not exist on it, causing a 500 error at runtime.
 
 **Key tables:**
 - `users` — id (UUID), email, name, phone, role (ADMIN/OFFICE/USER), is_active, password_hash

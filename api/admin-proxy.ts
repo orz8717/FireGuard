@@ -1,10 +1,10 @@
-import { neon } from '@neondatabase/serverless';
+import { Pool } from '@neondatabase/serverless';
 import { verifyToken } from './_auth';
 
-const sql = neon(process.env.DATABASE_URL!);
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
 async function query(queryStr: string, params: unknown[] = []): Promise<any[]> {
-  const result = await sql.query(queryStr, params);
+  const result = await pool.query(queryStr, params);
   return result.rows;
 }
 
@@ -126,7 +126,7 @@ export default async function handler(req: any, res: any) {
 
     // ── List users ─────────────────────────────────────────────────────────
     if (action === 'listUsers') {
-      const rows = await sql`SELECT * FROM "users" ORDER BY created_at DESC`;
+      const rows = await query(`SELECT * FROM "users" ORDER BY created_at DESC`);
       return res.status(200).json({ data: { users: rows }, error: null });
     }
 

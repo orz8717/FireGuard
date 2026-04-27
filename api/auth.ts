@@ -1,10 +1,10 @@
-import { neon } from '@neondatabase/serverless';
+import { Pool } from '@neondatabase/serverless';
 import { signToken, hashPassword, verifyPassword } from './_auth';
 
-const sql = neon(process.env.DATABASE_URL!);
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 
 async function query(queryStr: string, params: unknown[] = []): Promise<any[]> {
-  const result = await sql.query(queryStr, params);
+  const result = await pool.query(queryStr, params);
   return result.rows;
 }
 
