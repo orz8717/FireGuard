@@ -142,7 +142,7 @@ export default async function handler(req: any, res: any) {
 
       // password → hash and update password_hash in Neon
       if (userAttrs.password) {
-        const { hashPassword } = await import('./_auth');
+        const { hashPassword } = await import('./_auth.js');
         const hash = await hashPassword(userAttrs.password as string);
         await query(`UPDATE "users" SET password_hash = $1 WHERE id = $2`, [hash, targetId]);
       }
