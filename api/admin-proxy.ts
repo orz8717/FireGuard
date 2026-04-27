@@ -1,5 +1,5 @@
 import { neon } from '@neondatabase/serverless';
-import { verifyToken } from './_auth';
+import { verifyToken } from './_auth.js';
 
 const sql = neon(process.env.DATABASE_URL!);
 
