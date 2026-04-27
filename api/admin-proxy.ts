@@ -1,8 +1,7 @@
 import { neon } from '@neondatabase/serverless';
-import { verifyToken, createClerkClient } from '@clerk/backend';
+import { verifyToken } from './_auth';
 
 const sql = neon(process.env.DATABASE_URL!);
-const clerk = createClerkClient({ secretKey: process.env.CLERK_SECRET_KEY! });
 
 // ── Safe identifier quoting ───────────────────────────────────────────────────
 function q(name: string): string {
@@ -10,13 +9,9 @@ function q(name: string): string {
 }
 
 // ── JWT verification (Clerk) ──────────────────────────────────────────────────
-async function verifyUser(token: string): Promise<string | null> {
-  try {
-    const payload = await verifyToken(token, { secretKey: process.env.CLERK_SECRET_KEY! });
-    return payload.sub ?? null;
-  } catch {
-    return null;
-  }
+function verifyUser(token: string): string | null {
+  const payload = verifyToken(token);
+  return (payload?.sub as string) ?? null;
 }
 
 // ── Filter builder ────────────────────────────────────────────────────────────
@@ -95,7 +90,7 @@ export default async function handler(req: any, res: any) {
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
   if (!token) return res.status(401).json({ data: null, error: { message: 'Unauthorized' } });
 
-  const userId = await verifyUser(token);
+  const userId = verifyUser(token);
   if (!userId) return res.status(401).json({ data: null, error: { message: 'Invalid token' } });
 
   const body = req.body ?? {};
@@ -120,7 +115,7 @@ export default async function handler(req: any, res: any) {
         }).join(', ');
         queryStr = `SELECT * FROM ${fnName}(${argStr})`;
       }
-      const rows = await sql(queryStr, params);
+      const rows = await sql.query(queryStr, params);
       return res.status(200).json({ data: rows, error: null });
     }
 
@@ -139,15 +134,11 @@ export default async function handler(req: any, res: any) {
         return res.status(200).json({ data: { user: { id: targetId } }, error: null });
       }
 
-      // password → update via Clerk admin API
+      // password → hash and update password_hash in Neon
       if (userAttrs.password) {
-        const userRows = await sql(`SELECT email FROM "users" WHERE id = $1`, [targetId]);
-        if (userRows.length) {
-          const list = await clerk.users.getUserList({ emailAddress: [userRows[0].email] });
-          if (list.data.length) {
-            await clerk.users.updateUser(list.data[0].id, { password: userAttrs.password });
-          }
-        }
+        const { hashPassword } = await import('./_auth');
+        const hash = await hashPassword(userAttrs.password as string);
+        await sql.query(`UPDATE "users" SET password_hash = $1 WHERE id = $2`, [hash, targetId]);
       }
 
       // Other attrs → SQL UPDATE on users table
@@ -160,7 +151,7 @@ export default async function handler(req: any, res: any) {
           return `${q(k)} = $${params.length}`;
         }).join(', ');
         params.push(targetId);
-        await sql(`UPDATE "users" SET ${setClauses} WHERE id = $${params.length}`, params);
+        await sql.query(`UPDATE "users" SET ${setClauses} WHERE id = $${params.length}`, params);
       }
 
       return res.status(200).json({ data: { user: { id: targetId } }, error: null });
@@ -196,7 +187,7 @@ export default async function handler(req: any, res: any) {
         if (limitVal !== undefined) { params.push(limitVal); queryStr += ` LIMIT $${params.length}`; }
         if (rangeVal) { params.push(rangeVal[0]); queryStr += ` OFFSET $${params.length}`; }
 
-        const rows = await sql(queryStr, params);
+        const rows = await sql.query(queryStr, params);
         if (isSingle) {
           if (!rows.length) return res.status(200).json({ data: null, error: { code: 'PGRST116', message: 'No rows found' } });
           return res.status(200).json({ data: rows[0], error: null });
@@ -216,7 +207,7 @@ export default async function handler(req: any, res: any) {
           return `(${ph})`;
         }).join(', ');
         const ret = selectAfter !== undefined ? ` RETURNING ${selectAfter === '*' ? '*' : buildColStr(selectAfter)}` : '';
-        const rows = await sql(`INSERT INTO ${q(table)} (${colList}) VALUES ${valueSets}${ret}`, params);
+        const rows = await sql.query(`INSERT INTO ${q(table)} (${colList}) VALUES ${valueSets}${ret}`, params);
         return res.status(200).json({ data: selectAfter !== undefined ? (isSingle ? rows[0] ?? null : rows) : null, error: null });
       }
 
@@ -235,7 +226,7 @@ export default async function handler(req: any, res: any) {
           ? updateCols.map(c => `${q(c)} = EXCLUDED.${q(c)}`).join(', ')
           : `${q(onConflict)} = EXCLUDED.${q(onConflict)}`;
         const ret = selectAfter !== undefined ? ` RETURNING ${selectAfter === '*' ? '*' : buildColStr(selectAfter)}` : '';
-        const rows = await sql(
+        const rows = await sql.query(
           `INSERT INTO ${q(table)} (${colList}) VALUES ${valueSets} ON CONFLICT (${q(onConflict)}) DO UPDATE SET ${updateSet}${ret}`,
           params
         );
@@ -253,7 +244,7 @@ export default async function handler(req: any, res: any) {
         if (w) queryStr += ' ' + w;
         const ret = selectAfter !== undefined ? ` RETURNING ${selectAfter === '*' ? '*' : buildColStr(selectAfter)}` : '';
         queryStr += ret;
-        const rows = await sql(queryStr, params);
+        const rows = await sql.query(queryStr, params);
         return res.status(200).json({ data: selectAfter !== undefined ? (isSingle ? rows[0] ?? null : rows) : null, error: null });
       }
 
@@ -263,7 +254,7 @@ export default async function handler(req: any, res: any) {
         const w = buildWhere(filters, params);
         if (w) queryStr += ' ' + w;
         if (selectAfter !== undefined) queryStr += ' RETURNING *';
-        const rows = await sql(queryStr, params);
+        const rows = await sql.query(queryStr, params);
         return res.status(200).json({ data: selectAfter !== undefined ? rows : null, error: null });
       }
 

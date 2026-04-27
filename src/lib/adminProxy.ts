@@ -1,12 +1,7 @@
 const PROXY_URL = '/api/admin-proxy';
 
 async function getToken(): Promise<string | null> {
-  try {
-    const win = window as any;
-    return (await win.Clerk?.session?.getToken()) ?? null;
-  } catch {
-    return null;
-  }
+  return localStorage.getItem('fireguard_token');
 }
 
 async function callProxy(body: Record<string, unknown>): Promise<{ data: any; error: any }> {

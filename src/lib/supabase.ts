@@ -1,139 +1,88 @@
 /**
- * Supabase compatibility shim — no Supabase SDK.
- * Auth  → Clerk (window.Clerk global, set by <ClerkProvider>)
+ * Supabase compatibility shim — no Supabase SDK, no Clerk.
+ * Auth  → custom JWT via /api/auth (Neon-backed)
  * DB    → Neon via /api/admin-proxy
  * Realtime → not supported (use polling)
  */
 import { adminProxy } from './adminProxy';
 
-// ── Clerk window type ─────────────────────────────────────────────────────────
-function clerk(): any {
-  return (window as any).Clerk;
-}
-
 // ── Auth shim ─────────────────────────────────────────────────────────────────
 const auth = {
   async signInWithPassword({ email, password }: { email: string; password: string }) {
     try {
-      const c = clerk();
-      if (!c) return { data: { user: null }, error: { message: 'Clerk not initialised' } };
-
-      let result: any;
-      try {
-        result = await c.client?.signIn?.create({
-          strategy: 'password',
-          identifier: email,
-          password,
-        });
-      } catch (clerkErr: any) {
-        console.error('[Auth] Clerk signIn error:', clerkErr);
-        const msg = clerkErr?.errors?.[0]?.longMessage || clerkErr?.errors?.[0]?.message || clerkErr?.message || 'Clerk sign-in failed';
-        return { data: { user: null }, error: { message: msg } };
+      const res = await fetch('/api/auth', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'login', email, password }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        return { data: { user: null }, error: { message: data.error || 'Login failed' } };
       }
-
-      if (result?.status !== 'complete') {
-        console.error('[Auth] signIn status:', result?.status, result);
-        return { data: { user: null }, error: { message: `Sign-in status: ${result?.status}` } };
-      }
-
-      await c.setActive({ session: result.createdSessionId });
-
-      // Fetch the internal user row from Neon by email so callers get the DB UUID
-      const token = await c.session?.getToken();
-      if (token) {
-        const res = await fetch('/api/admin-proxy', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-          body: JSON.stringify({
-            action: 'from', table: 'users', method: 'select', columns: '*',
-            filters: [{ type: 'eq', col: 'email', val: email }],
-            single: false, maybeSingle: true,
-          }),
-        });
-        const { data: row } = await res.json();
-        if (row) return { data: { user: { id: row.id, email: row.email } }, error: null };
-      }
-
-      return { data: { user: { id: result.createdUserId, email } }, error: null };
+      localStorage.setItem('fireguard_token', data.token);
+      localStorage.setItem('fireguard_session', JSON.stringify(data.user));
+      return { data: { user: data.user }, error: null };
     } catch (e: any) {
       return { data: { user: null }, error: { message: e.message ?? 'Sign-in error' } };
     }
   },
 
   async signUp({ email, password }: { email: string; password: string }) {
-    try {
-      const c = clerk();
-      if (!c) return { data: { user: null }, error: { message: 'Clerk not initialised' } };
-      const result = await c.client?.signUp?.create({ emailAddress: email, password });
-      return { data: { user: { id: result?.createdUserId ?? crypto.randomUUID(), email } }, error: null };
-    } catch (e: any) {
-      return { data: { user: null }, error: { message: e.message ?? 'Sign-up error' } };
-    }
+    // Actual user creation happens in authService.signUp via supabase.from('users').insert()
+    // Password will be set on first login
+    return { data: { user: { id: crypto.randomUUID(), email } }, error: null };
   },
 
   async signOut() {
-    try { await clerk()?.signOut(); } catch {}
+    localStorage.removeItem('fireguard_token');
+    localStorage.removeItem('fireguard_session');
     return { error: null };
   },
 
   async getSession() {
+    const token = localStorage.getItem('fireguard_token');
+    const saved = localStorage.getItem('fireguard_session');
+    if (!token || !saved) return { data: { session: null }, error: null };
     try {
-      const c = clerk();
-      const token = await c?.session?.getToken();
-      if (!token) return { data: { session: null }, error: null };
-      return {
-        data: { session: { access_token: token, expires_at: Math.floor(Date.now() / 1000) + 3600 } },
-        error: null,
-      };
+      const user = JSON.parse(saved);
+      return { data: { session: { access_token: token, user } }, error: null };
     } catch {
       return { data: { session: null }, error: null };
     }
   },
 
   async getUser() {
+    const saved = localStorage.getItem('fireguard_session');
+    if (!saved) return { data: { user: null }, error: null };
     try {
-      const c = clerk();
-      const clerkUser = c?.user;
-      if (!clerkUser) return { data: { user: null }, error: null };
-      return { data: { user: { id: clerkUser.id, email: clerkUser.primaryEmailAddress?.emailAddress } }, error: null };
+      return { data: { user: JSON.parse(saved) }, error: null };
     } catch {
       return { data: { user: null }, error: null };
     }
   },
 
   onAuthStateChange(callback: (event: string, session: any) => void) {
-    const handler = async ({ session: clerkSession }: any) => {
-      if (clerkSession) {
-        // Use the user ID already saved in localStorage (set by authService.login)
-        // so App.tsx receives the DB UUID, not the Clerk user ID.
-        try {
-          const saved = localStorage.getItem('fireguard_session');
-          const savedUser = saved ? JSON.parse(saved) : null;
-          if (savedUser?.id) {
-            const token = (await clerkSession.getToken?.()) ?? 'pending';
-            callback('INITIAL_SESSION', { access_token: token, user: { id: savedUser.id } });
-          }
-        } catch {}
-      } else {
+    // Fire once on subscribe with current session state
+    const token = localStorage.getItem('fireguard_token');
+    const saved = localStorage.getItem('fireguard_session');
+
+    if (token && saved) {
+      try {
+        const user = JSON.parse(saved);
+        setTimeout(() => callback('INITIAL_SESSION', { access_token: token, user }), 0);
+      } catch {}
+    }
+
+    // Detect logout in other tabs via storage events
+    const storageHandler = (e: StorageEvent) => {
+      if (e.key === 'fireguard_token' && !e.newValue) {
         callback('SIGNED_OUT', null);
       }
     };
-
-    // Register once Clerk is available; retry every 200 ms while it loads.
-    let removeFn: (() => void) | null = null;
-    const tryRegister = () => {
-      const c = clerk();
-      if (c) {
-        c.addListener(handler);
-        removeFn = () => c.removeListener(handler);
-      } else {
-        setTimeout(tryRegister, 200);
-      }
-    };
-    tryRegister();
+    window.addEventListener('storage', storageHandler);
 
     return {
-      data: { subscription: { unsubscribe: () => removeFn?.() } },
+      data: { subscription: { unsubscribe: () => window.removeEventListener('storage', storageHandler) } },
     };
   },
 };

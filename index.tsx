@@ -1,6 +1,5 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import { ClerkProvider } from '@clerk/react';
 import App from './App';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import './index.css';
@@ -12,17 +11,15 @@ const root = ReactDOM.createRoot(rootElement);
 
 window.addEventListener('unhandledrejection', (event) => {
   if (event.reason?.message?.includes('Refresh Token') || event.reason?.message?.includes('refresh_token_not_found')) {
-    console.error('Auth session error detected, clearing local storage...');
     localStorage.removeItem('fireguard_session');
+    localStorage.removeItem('fireguard_token');
   }
 });
 
 root.render(
   <React.StrictMode>
     <ErrorBoundary>
-      <ClerkProvider afterSignOutUrl="/">
-        <App />
-      </ClerkProvider>
+      <App />
     </ErrorBoundary>
   </React.StrictMode>
 );
