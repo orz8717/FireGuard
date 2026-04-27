@@ -3,6 +3,11 @@ import { verifyToken } from './_auth';
 
 const sql = neon(process.env.DATABASE_URL!);
 
+async function query(queryStr: string, params: unknown[] = []): Promise<any[]> {
+  const result = await sql.query(queryStr, params);
+  return result.rows;
+}
+
 // ── Safe identifier quoting ───────────────────────────────────────────────────
 function q(name: string): string {
   return `"${name.replace(/"/g, '""')}"`;
@@ -115,7 +120,7 @@ export default async function handler(req: any, res: any) {
         }).join(', ');
         queryStr = `SELECT * FROM ${fnName}(${argStr})`;
       }
-      const rows = await sql.query(queryStr, params);
+      const rows = await query(queryStr, params);
       return res.status(200).json({ data: rows, error: null });
     }
 
@@ -138,7 +143,7 @@ export default async function handler(req: any, res: any) {
       if (userAttrs.password) {
         const { hashPassword } = await import('./_auth');
         const hash = await hashPassword(userAttrs.password as string);
-        await sql.query(`UPDATE "users" SET password_hash = $1 WHERE id = $2`, [hash, targetId]);
+        await query(`UPDATE "users" SET password_hash = $1 WHERE id = $2`, [hash, targetId]);
       }
 
       // Other attrs → SQL UPDATE on users table
@@ -151,7 +156,7 @@ export default async function handler(req: any, res: any) {
           return `${q(k)} = $${params.length}`;
         }).join(', ');
         params.push(targetId);
-        await sql.query(`UPDATE "users" SET ${setClauses} WHERE id = $${params.length}`, params);
+        await query(`UPDATE "users" SET ${setClauses} WHERE id = $${params.length}`, params);
       }
 
       return res.status(200).json({ data: { user: { id: targetId } }, error: null });
@@ -187,7 +192,7 @@ export default async function handler(req: any, res: any) {
         if (limitVal !== undefined) { params.push(limitVal); queryStr += ` LIMIT $${params.length}`; }
         if (rangeVal) { params.push(rangeVal[0]); queryStr += ` OFFSET $${params.length}`; }
 
-        const rows = await sql.query(queryStr, params);
+        const rows = await query(queryStr, params);
         if (isSingle) {
           if (!rows.length) return res.status(200).json({ data: null, error: { code: 'PGRST116', message: 'No rows found' } });
           return res.status(200).json({ data: rows[0], error: null });
@@ -207,7 +212,7 @@ export default async function handler(req: any, res: any) {
           return `(${ph})`;
         }).join(', ');
         const ret = selectAfter !== undefined ? ` RETURNING ${selectAfter === '*' ? '*' : buildColStr(selectAfter)}` : '';
-        const rows = await sql.query(`INSERT INTO ${q(table)} (${colList}) VALUES ${valueSets}${ret}`, params);
+        const rows = await query(`INSERT INTO ${q(table)} (${colList}) VALUES ${valueSets}${ret}`, params);
         return res.status(200).json({ data: selectAfter !== undefined ? (isSingle ? rows[0] ?? null : rows) : null, error: null });
       }
 
@@ -226,7 +231,7 @@ export default async function handler(req: any, res: any) {
           ? updateCols.map(c => `${q(c)} = EXCLUDED.${q(c)}`).join(', ')
           : `${q(onConflict)} = EXCLUDED.${q(onConflict)}`;
         const ret = selectAfter !== undefined ? ` RETURNING ${selectAfter === '*' ? '*' : buildColStr(selectAfter)}` : '';
-        const rows = await sql.query(
+        const rows = await query(
           `INSERT INTO ${q(table)} (${colList}) VALUES ${valueSets} ON CONFLICT (${q(onConflict)}) DO UPDATE SET ${updateSet}${ret}`,
           params
         );
@@ -244,7 +249,7 @@ export default async function handler(req: any, res: any) {
         if (w) queryStr += ' ' + w;
         const ret = selectAfter !== undefined ? ` RETURNING ${selectAfter === '*' ? '*' : buildColStr(selectAfter)}` : '';
         queryStr += ret;
-        const rows = await sql.query(queryStr, params);
+        const rows = await query(queryStr, params);
         return res.status(200).json({ data: selectAfter !== undefined ? (isSingle ? rows[0] ?? null : rows) : null, error: null });
       }
 
@@ -254,7 +259,7 @@ export default async function handler(req: any, res: any) {
         const w = buildWhere(filters, params);
         if (w) queryStr += ' ' + w;
         if (selectAfter !== undefined) queryStr += ' RETURNING *';
-        const rows = await sql.query(queryStr, params);
+        const rows = await query(queryStr, params);
         return res.status(200).json({ data: selectAfter !== undefined ? rows : null, error: null });
       }
 

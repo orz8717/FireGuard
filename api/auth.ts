@@ -3,6 +3,11 @@ import { signToken, hashPassword, verifyPassword } from './_auth';
 
 const sql = neon(process.env.DATABASE_URL!);
 
+async function query(queryStr: string, params: unknown[] = []): Promise<any[]> {
+  const result = await sql.query(queryStr, params);
+  return result.rows;
+}
+
 export default async function handler(req: any, res: any) {
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
@@ -16,7 +21,7 @@ export default async function handler(req: any, res: any) {
     }
 
     try {
-      const users = await sql.query(
+      const users = await query(
         `SELECT id, email, name, phone, role, is_active, password_hash FROM "users" WHERE email = $1 LIMIT 1`,
         [email]
       );
@@ -30,7 +35,7 @@ export default async function handler(req: any, res: any) {
       if (!user.password_hash) {
         // First login — hash and store the password
         const hash = await hashPassword(password);
-        await sql.query(`UPDATE "users" SET password_hash = $1 WHERE id = $2`, [hash, user.id]);
+        await query(`UPDATE "users" SET password_hash = $1 WHERE id = $2`, [hash, user.id]);
       } else {
         const ok = await verifyPassword(password, user.password_hash);
         if (!ok) return res.status(401).json({ error: 'Invalid credentials' });
@@ -62,7 +67,7 @@ export default async function handler(req: any, res: any) {
     }
     try {
       const hash = await hashPassword(newPassword);
-      await sql.query(`UPDATE "users" SET password_hash = $1 WHERE id = $2`, [hash, userId]);
+      await query(`UPDATE "users" SET password_hash = $1 WHERE id = $2`, [hash, userId]);
       return res.status(200).json({ success: true });
     } catch (e: any) {
       return res.status(500).json({ error: 'Server error' });

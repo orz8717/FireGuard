@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback } from 'react';
-import { supabase } from '../lib/supabaseClient';
 
 export type ConnectionStatus = 'connected' | 'disconnected' | 'checking' | 'supabase-error';
 
@@ -29,15 +28,17 @@ const checkInternet = async (): Promise<boolean> => {
   }
 };
 
-const checkSupabase = async (): Promise<boolean> => {
+const checkDatabase = async (): Promise<boolean> => {
   try {
-    const { error } = await supabase
-      .from('users')
-      .select('id')
-      .limit(1)
-      .maybeSingle();
-    return !error;
-  } catch (err) {
+    const token = localStorage.getItem('fireguard_token');
+    if (!token) return true;
+    const res = await fetch('/api/admin-proxy', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+      body: JSON.stringify({ action: 'from', table: 'users', method: 'select', columns: 'id', limit: 1 }),
+    });
+    return res.ok;
+  } catch {
     return false;
   }
 };
@@ -50,18 +51,18 @@ export const useConnectionStatus = (): ConnectionState => {
 
   const check = useCallback(async () => {
     setStatus('checking');
-    const [internetRes, supabaseRes] = await Promise.all([
+    const [internetRes, dbRes] = await Promise.all([
       checkInternet(),
-      checkSupabase()
+      checkDatabase(),
     ]);
 
     setInternet(internetRes);
-    setSupabaseConn(supabaseRes);
+    setSupabaseConn(dbRes);
     setLastChecked(new Date());
 
     if (!internetRes) {
       setStatus('disconnected');
-    } else if (!supabaseRes) {
+    } else if (!dbRes) {
       setStatus('supabase-error');
     } else {
       setStatus('connected');
