@@ -70,21 +70,24 @@ Auth was migrated away from Clerk. The custom system works as follows:
 Connection string is in `DATABASE_URL`. Uses `@neondatabase/serverless`.
 
 **CRITICAL — Neon SDK API:**
-Use `Pool` from `@neondatabase/serverless` for parameterised queries — it is fully pg-compatible and has `.query(text, params)` that returns `{ rows: [...] }`.
+- `neon()` returns a **tagged-template function** — no `.query()` method exists on it
+- `Pool` from the same package requires WebSocket configuration in serverless and crashes silently
 
-Both API files use this pattern:
+The correct pattern for parameterised queries is to reconstruct the tagged-template call:
+
 ```typescript
-import { Pool } from '@neondatabase/serverless';
+import { neon } from '@neondatabase/serverless';
 
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const sql = neon(process.env.DATABASE_URL!);
 
-async function query(queryStr: string, params: unknown[] = []): Promise<any[]> {
-  const result = await pool.query(queryStr, params);  // pg-compatible QueryResult
-  return result.rows;
+async function query(text: string, params: unknown[] = []): Promise<any[]> {
+  const parts = text.split(/\$\d+/);
+  const strings = Object.assign(parts, { raw: parts }) as unknown as TemplateStringsArray;
+  return sql(strings, ...params) as unknown as Promise<any[]>;
 }
 ```
 
-**Never** use `neon()` with `.query()` — `neon()` returns a tagged-template function and `.query()` does not exist on it, causing a 500 error at runtime.
+This uses the HTTP transport (no WebSocket needed) and returns rows directly as `any[]`.
 
 **Key tables:**
 - `users` — id (UUID), email, name, phone, role (ADMIN/OFFICE/USER), is_active, password_hash

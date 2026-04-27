@@ -1,11 +1,12 @@
-import { Pool } from '@neondatabase/serverless';
+import { neon } from '@neondatabase/serverless';
 import { verifyToken } from './_auth';
 
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const sql = neon(process.env.DATABASE_URL!);
 
-async function query(queryStr: string, params: unknown[] = []): Promise<any[]> {
-  const result = await pool.query(queryStr, params);
-  return result.rows;
+async function query(text: string, params: unknown[] = []): Promise<any[]> {
+  const parts = text.split(/\$\d+/);
+  const strings = Object.assign(parts, { raw: parts }) as unknown as TemplateStringsArray;
+  return sql(strings, ...params) as unknown as Promise<any[]>;
 }
 
 // ── Safe identifier quoting ───────────────────────────────────────────────────
